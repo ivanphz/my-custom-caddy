@@ -62,7 +62,7 @@ jobs:
           name: ${{ matrix.output_name }}
           path: ${{ matrix.output_name }}
 
-  release:
+release:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -71,14 +71,26 @@ jobs:
         with:
           path: artifacts
 
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
+      # 1. 生成更好看的时间变量
+      - name: Generate Release Vars
+        id: vars
+        run: |
+          echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+          # 生成一个形如 20251215-1030 的时间戳，避免一天多次构建导致 Tag 冲突
+          echo "TIME_TAG=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
 
+      # 2. 发布
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: build-${{ github.run_number }} # 自动生成版本号
-          name: Auto Build ${{ github.run_number }}
+          # Tag 变成: v20251215-1030
+          tag_name: v${{ env.TIME_TAG }}
+          # 标题变成: Custom Caddy - 2025-12-15
+          name: Custom Caddy - ${{ env.DATE }}
+          body: |
+            自动构建完成。
+            构建时间: ${{ env.DATE }}
+            包含架构: AMD64, ARM64
           files: |
             artifacts/caddy-linux-amd64/caddy-linux-amd64
             artifacts/caddy-linux-arm64/caddy-linux-arm64
