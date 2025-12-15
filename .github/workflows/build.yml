@@ -1,0 +1,85 @@
+name: Build Custom Caddy
+
+on:
+  workflow_dispatch: # 允许你在 GitHub 网页上手动点击按钮触发构建
+  push:
+    tags:
+      - "v*" # 或者当你推送类似 v1.0.0 的 tag 时自动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 允许发布 Release
+
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            goos: linux
+            output_name: caddy-linux-amd64
+          - goarch: arm64
+            goos: linux
+            output_name: caddy-linux-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5' # Caddy 建议使用较新版本的 Go
+          check-latest: true
+
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      - name: Build Caddy (${{ matrix.goarch }})
+        env:
+          CGO_ENABLED: 0 # 静态编译，兼容性最好
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          ~/go/bin/xcaddy build \
+            --output ${{ matrix.output_name }} \
+            --with github.com/greenpau/caddy-security \
+            --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive \
+            --with github.com/mholt/caddy-l4 \
+            --with github.com/WeidiDeng/caddy-cloudflare-ip \
+            --with github.com/LeenHawk/caddy-edgeone-ip \
+            --with github.com/xcaddyplugins/caddy-trusted-cloudfront \
+            --with github.com/tuzzmaniandevil/caddy-dynamic-clientip \
+            --with github.com/monobilisim/caddy-ip-list \
+            --with github.com/fvbommel/caddy-combine-ip-ranges \
+            --with github.com/porech/caddy-maxmind-geolocation \
+            --with github.com/mholt/caddy-ratelimit
+
+      - name: Upload Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: ${{ matrix.output_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: build-${{ github.run_number }} # 自动生成版本号
+          name: Auto Build ${{ github.run_number }}
+          files: |
+            artifacts/caddy-linux-amd64/caddy-linux-amd64
+            artifacts/caddy-linux-arm64/caddy-linux-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
