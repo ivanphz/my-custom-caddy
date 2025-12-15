@@ -62,7 +62,7 @@ jobs:
           name: ${{ matrix.output_name }}
           path: ${{ matrix.output_name }}
 
-release:
+ release:
     needs: build
     runs-on: ubuntu-latest
     steps:
