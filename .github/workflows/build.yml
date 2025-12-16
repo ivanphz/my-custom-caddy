@@ -61,6 +61,7 @@ jobs:
             --with github.com/caddy-dns/tencentcloud \
             --with github.com/okrc/caddy-uploadcert-tencentcloud \
             --with github.com/mholt/caddy-webdav \
+            --with github.com/caddyserver/jsonc-adapter \
             --with github.com/mholt/caddy-events-exec
 
       - name: Upload Artifact (Backup)
