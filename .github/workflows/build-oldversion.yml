@@ -1,4 +1,4 @@
-name: Build Custom Caddy
+name: Build_Custom_Caddy-manual
 
 on:
   workflow_dispatch:
