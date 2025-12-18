@@ -46,15 +46,14 @@ jobs:
             TZ='Asia/Shanghai' date +'%Y%m%d-%H%M' | xargs -I {} echo "VERSION_TAG=v{}" >> $GITHUB_ENV
           fi
 
-      # === 2. 编译核心 (修正了 ldflags 报错) ===
+      # === 2. 编译核心 (已修复 ldflags 报错) ===
       - name: Build Caddy (${{ matrix.goarch }})
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # [关键修正]：使用 GOFLAGS 环境变量传递 ldflags
-          # -w -s 用于减小体积，-X 用于注入版本号
+          # 使用 GOFLAGS 传递 ldflags 注入版本号
           export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ env.VERSION_TAG }}"
           
           ~/go/bin/xcaddy build \
@@ -77,7 +76,7 @@ jobs:
             --with github.com/caddyserver/jsonc-adapter \
             --with github.com/mholt/caddy-events-exec
 
-      # === 3. 生成构建信息 (仅运行一次) ===
+      # === 3. 生成构建信息 ===
       - name: Generate Release Note Info
         if: matrix.goarch == 'amd64'
         run: |
@@ -86,7 +85,10 @@ jobs:
           echo "" >> release_notes.md
           echo "- **Custom Version**: \`${{ env.VERSION_TAG }}\`" >> release_notes.md
           echo "- **Caddy Output**: \`$(./${{ matrix.output_name }} version)\`" >> release_notes.md
-          echo "- **Build Time**: $(date)" >> release_notes.md
+          # [新增] Go 版本
+          echo "- **Go Version**: \`$(go version | awk '{print $3}')\`" >> release_notes.md
+          # [修改] 使用 Asia/Shanghai 时区
+          echo "- **Build Time**: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S (Beijing)')" >> release_notes.md
           echo "" >> release_notes.md
           echo "### 🔌 Installed Plugins" >> release_notes.md
           
@@ -133,8 +135,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* ]]; then
              echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           else
-             # 为手动构建生成同名 Tag (注意：这里使用 date 可能与 build 阶段有微小秒差，但对于手动触发通常可接受)
-             # 更严谨的做法是 build 阶段传递 artifact，但为了脚本简洁，这里重新生成
+             # 手动触发时生成同名 Tag (注意：若 build 跨分钟可能导致 Tag 名微小差异，建议手动触发不要太在意秒数)
              TZ='Asia/Shanghai' date +'%Y%m%d-%H%M' | xargs -I {} echo "TAG_NAME=v{}" >> $GITHUB_ENV
           fi
 
