@@ -8,24 +8,28 @@ on:
     paths:
       - 'go.mod'
       - 'scripts/**'
+      - '.github/workflows/build.yml'
 
 permissions:
   contents: write
 
 jobs:
-  # 🟢 新增：初始化任务，确保所有后续任务使用同一个版本号
+  # 1. 初始化任务：生成唯一的北京时间版本号
   init:
     runs-on: ubuntu-latest
     outputs:
       version_tag: ${{ steps.ver.outputs.tag }}
+      build_time: ${{ steps.ver.outputs.time }}
     steps:
       - name: Generate Global Version Tag
         id: ver
         run: |
+          # 强制使用北京时间生成 Tag 和时间字符串
           TZ='Asia/Shanghai' echo "tag=v$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+          TZ='Asia/Shanghai' echo "time=$(date +'%Y-%m-%d %H:%M:%S (Beijing)')" >> $GITHUB_OUTPUT
 
   build:
-    needs: init  # 依赖 init 任务
+    needs: init
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -50,42 +54,46 @@ jobs:
       - name: Install xcaddy
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-      # 🟢 修复：直接使用 init 传过来的版本号
+      # 引入 init 阶段生成的版本号
       - name: Set Version Logic
         run: echo "VERSION_TAG=${{ needs.init.outputs.version_tag }}" >> $GITHUB_ENV
 
-      # 运行智能脚本 (生成参数和日志)
+      # 运行新版 Python 脚本
       - name: Analyze Dependencies & Generate Logs
         id: analyze
         run: python3 scripts/gen_info.py
 
-      # 编译核心
+      # 编译 Caddy
       - name: Build Caddy (${{ matrix.goarch }})
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # 注入全局统一的版本号
           export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ env.VERSION_TAG }}"
-          
           ~/go/bin/xcaddy build \
             --output ${{ matrix.output_name }} \
             ${{ steps.analyze.outputs.XCADDY_ARGS }}
 
-      # 组合 Release Note (仅在 amd64 执行，避免重复)
+      # 组合 Release Note (仅在 amd64 执行)
       - name: Assemble Release Note
         if: matrix.goarch == 'amd64'
         run: |
           chmod +x ${{ matrix.output_name }}
+          
+          # 1. 写入标题 (北京时间)
           echo "## ${{ env.VERSION_TAG }} Latest" > final_note.md
-          cat release_notes.md >> final_note.md
+          
+          # 2. 写入 Build Info (置顶!)
           echo "" >> final_note.md
           echo "### 🚀 Build Info" >> final_note.md
-          echo "- **Custom Version**: \`${{ env.VERSION_TAG }}\`" >> final_note.md
-          echo "- **Caddy Output**: \`$(./${{ matrix.output_name }} version)\`" >> final_note.md
+          echo "- **Caddy Core**: \`${{ steps.analyze.outputs.CADDY_VERSION }}\`" >> final_note.md
           echo "- **Go Version**: \`$(go version | awk '{print $3}')\`" >> final_note.md
-          echo "- **Build Time**: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S (Beijing)')" >> final_note.md
+          echo "- **Build Time**: ${{ needs.init.outputs.build_time }}" >> final_note.md
+          echo "" >> final_note.md
+          
+          # 3. 写入 Python 生成的 插件变动 和 列表
+          cat release_notes.md >> final_note.md
 
       - name: Generate Checksum
         run: sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
@@ -101,7 +109,7 @@ jobs:
             manifest.json
 
   release:
-    needs: [init, build] # 依赖 init 和 build
+    needs: [init, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download Artifacts
@@ -111,9 +119,7 @@ jobs:
 
       - name: Prepare Release Body
         run: |
-          # 只使用 amd64 里的 note 和 manifest，防止冲突
           cat artifacts/caddy-amd64/final_note.md > body.md
-          
           echo "" >> body.md
           echo "### 🛡️ SHA256 Checksums" >> body.md
           echo "\`\`\`" >> body.md
@@ -124,7 +130,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ needs.init.outputs.version_tag }} # 🟢 修复：使用 init 的版本号
+          tag_name: ${{ needs.init.outputs.version_tag }}
           name: ${{ needs.init.outputs.version_tag }}
           body_path: body.md
           files: |
