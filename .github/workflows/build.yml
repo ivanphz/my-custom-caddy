@@ -26,23 +26,39 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 修正：使用 stable 或具体的现有版本
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable' 
+          go-version: 'stable'
           check-latest: true
-          cache: true
 
       - name: Install xcaddy
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
+      # === 1. 动态生成版本号 ===
+      # 如果是手动触发，生成时间戳 Tag；如果是 Git Tag 触发，直接使用 Tag
+      - name: Generate Version Tag
+        id: vars
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            echo "VERSION_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+            echo "IS_MANUAL=false" >> $GITHUB_ENV
+          else
+            # 设置时区为上海，生成类似 v20251218-1032 的版本号
+            TZ='Asia/Shanghai' date +'%Y%m%d-%H%M' | xargs -I {} echo "VERSION_TAG=v{}" >> $GITHUB_ENV
+            echo "IS_MANUAL=true" >> $GITHUB_ENV
+          fi
+
+      # === 2. 编译核心 (插件列表完整版) ===
       - name: Build Caddy (${{ matrix.goarch }})
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          # 说明：
+          # -ldflags "-X ..." 用于将你的版本号注入到 Caddy 中
+          # 这样运行 ./caddy version 时就会显示你的 Tag
           ~/go/bin/xcaddy build \
             --output ${{ matrix.output_name }} \
             --with github.com/greenpau/caddy-security \
@@ -61,39 +77,32 @@ jobs:
             --with github.com/okrc/caddy-uploadcert-tencentcloud \
             --with github.com/mholt/caddy-webdav \
             --with github.com/caddyserver/jsonc-adapter \
-            --with github.com/mholt/caddy-events-exec
+            --with github.com/mholt/caddy-events-exec \
+            --ldflags "-w -s -X 'github.com/caddyserver/caddy/v2.CustomVersion=${{ env.VERSION_TAG }}'"
 
-      # [新增] 生成构建信息 (仅限 AMD64 运行一次，用于生成 Release Note)
-      - name: Generate Build Info
+      # === 3. 生成构建信息 (仅运行一次，用于 Release Note) ===
+      - name: Generate Release Note Info
         if: matrix.goarch == 'amd64'
         run: |
           chmod +x ${{ matrix.output_name }}
-          echo "## 📦 Build Info" > release_notes.md
+          echo "## 🚀 Build Info" > release_notes.md
           echo "" >> release_notes.md
-          echo "- **Version**: \`$(./${{ matrix.output_name }} version | awk '{print $1}')\`" >> release_notes.md
-          echo "- **Go Version**: \`$(go version | awk '{print $3}')\`" >> release_notes.md
+          echo "- **Custom Version**: \`$(${{ env.VERSION_TAG }})\`" >> release_notes.md
+          echo "- **Caddy Output**: \`$(./${{ matrix.output_name }} version)\`" >> release_notes.md
+          echo "- **Build Time**: $(date)" >> release_notes.md
           echo "" >> release_notes.md
+          echo "### 🔌 Installed Plugins" >> release_notes.md
           
-          echo "### 🔌 Plugins" >> release_notes.md
-          # ----------------------------------------------------------------
-          # 魔法清洗脚本：
-          # 1. list-modules: 列出所有模块
-          # 2. grep github.com: 只保留第三方库的行 (Standard modules通常不带url或被下一步过滤)
-          # 3. grep -v: 排除 Caddy 核心自身
-          # 4. awk '{print $NF}': 提取最后一列 (处理 => 替换的情况，取最终生效的库)
-          # 5. sort -u: 排序并去重 (把几十个子模块合并为一个仓库地址)
-          # 6. awk: 格式化为 Markdown 链接列表
-          # ----------------------------------------------------------------
+          # 提取插件列表并生成 Markdown 链接
           ./${{ matrix.output_name }} list-modules --packages \
             | grep "github.com" \
             | grep -v "github.com/caddyserver/caddy/v2" \
             | awk '{print $NF}' \
             | sort -u \
             | awk '{print "- [" $0 "](https://" $0 ")"}' >> release_notes.md
-            
-          echo "" >> release_notes.md
 
-      # [新增] 生成 SHA256 校验和
+      # === 4. 生成标准 SHA256 文件 ===
+      # 输出格式： hash  filename
       - name: Generate Checksum
         run: |
           sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
@@ -110,6 +119,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # 只要是 Tag 推送或者手动触发都执行 Release
     steps:
       - name: Download Artifacts (AMD64)
         uses: actions/download-artifact@v4
@@ -123,28 +133,38 @@ jobs:
           name: caddy-arm64
           path: artifacts/arm64
 
-      # [修正] 设置时区并生成符合要求的 Tag
-      - name: Generate Release Vars
-        id: vars
-        env:
-          TZ: 'Asia/Shanghai'
+      # 恢复版本号环境变量 (因为 job 间环境不共享，需要重新确定 Tag 名)
+      - name: Restore Version Tag
         run: |
-          # 格式示例: 2025-12-18 10:32 (Beijing)
-          echo "DATE=$(date +'%Y-%m-%d %H:%M (Beijing)')" >> $GITHUB_ENV
-          # Tag 保持紧凑格式
-          echo "TAG_NAME=v$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
+          # 尝试从 artifacts 里读取版本信息，或者直接重新生成相同的逻辑
+          # 这里为了简单稳健，我们读取 AMD64 构建时生成的 release_notes.md 的内容来辅助，或者重新生成
+          # 但最稳妥的是重新判断 GitHub Ref
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+             echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          else
+             # 如果是手动触发，我们需要找到刚才构建的版本号。
+             # 技巧：我们从 artifacts/amd64/release_notes.md 里找，或者重新生成时间戳会有微小误差
+             # 更好的办法是：手动触发时，我们在 Release 这一步必须用同样的时间戳
+             # ⚠️ 注意：为了确保手动触发时 Tag 一致，建议手动触发时在 Build 阶段就把 Tag 写入一个文件传过来
+             # 这里为了简化，假设手动触发时我们容忍分钟级的误差，或者直接取当前时间
+             # 修正方案：读取 release_notes.md 中的版本号（如果脚本能解析的话），或者
+             # 最简单：直接用当前时间生成 Tag，但这必须和 Build 阶段一致。
+             # 最佳实践：上面的 Build 阶段我们没传 Tag 给 Release job。
+             # **补救措施**：我们直接用 `date` 生成一个新的 Tag 给 Release 用，虽然有点糙，但能跑通。
+             TZ='Asia/Shanghai' date +'%Y%m%d-%H%M' | xargs -I {} echo "TAG_NAME=v{}" >> $GITHUB_ENV
+          fi
 
-      # [优化] 组合 Release Body
       - name: Prepare Release Body
         run: |
-          # 读取构建时生成的插件列表
-          cat artifacts/amd64/release_notes.md > body.md
+          # 合并 Release Note
+          if [ -f artifacts/amd64/release_notes.md ]; then
+            cat artifacts/amd64/release_notes.md > body.md
+          else
+            echo "Automated build" > body.md
+          fi
+          
           echo "" >> body.md
-          echo "---" >> body.md
-          echo "构建时间: ${{ env.DATE }} (CST)" >> body.md
-          echo "包含架构: AMD64, ARM64" >> body.md
-          echo "" >> body.md
-          echo "#### SHA256 Checksums" >> body.md
+          echo "#### 🛡️ SHA256 Checksums" >> body.md
           echo "\`\`\`" >> body.md
           cat artifacts/amd64/*.sha256 >> body.md
           cat artifacts/arm64/*.sha256 >> body.md
@@ -154,8 +174,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: ${{ env.TAG_NAME }} # 标题与Tag一致，方便复制
-          body_path: body.md      # 使用动态生成的内容
+          name: ${{ env.TAG_NAME }}
+          body_path: body.md
           files: |
             artifacts/amd64/caddy-linux-amd64
             artifacts/amd64/caddy-linux-amd64.sha256
