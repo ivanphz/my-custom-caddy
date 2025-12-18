@@ -1,0 +1,75 @@
+name: Update Dependencies
+
+on:
+  schedule:
+    - cron: '0 10 * * 5' # 每周五 18:00 (Beijing Time)
+  workflow_dispatch:      # 手动强制运行
+  push:
+    paths:
+      - 'plugins.txt'     # 修改列表自动触发
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Initialize & Update
+        run: |
+          # 1. 确保 go.mod 存在
+          if [ ! -f go.mod ]; then
+            go mod init github.com/${{ github.repository }}
+          fi
+
+          # 2. 清理旧的 replace 规则，保证纯净
+          go mod edit -dropreplace=all || true
+
+          # 3. 解析 plugins.txt
+          grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
+            echo "Processing: $line"
+            
+            if [[ "$line" == *"="* ]]; then
+              # 处理替换逻辑: 原名=替身@版本
+              ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
+              REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
+              
+              # 设置 replace 并拉取
+              go mod edit -replace $ORIGINAL=$REPLACEMENT
+              go get $ORIGINAL # Go 会自动解析到替身
+            else
+              # 普通插件: 拉取最新
+              go get $line@latest
+            fi
+          done
+
+          # 4. 整理依赖
+          go mod tidy
+
+      - name: Check for Changes
+        id: git-check
+        run: |
+          # 检查文件变动
+          if git diff --quiet go.mod go.sum; then
+            echo "No changes detected."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Changes detected!"
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit & Push
+        if: steps.git-check.outputs.changed == 'true'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add go.mod go.sum
+          git commit -m "chore: update dependencies from plugins.txt"
+          git push
