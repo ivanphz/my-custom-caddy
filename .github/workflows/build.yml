@@ -70,13 +70,28 @@ jobs:
           chmod +x ${{ matrix.output_name }}
           echo "## 📦 Build Info" > release_notes.md
           echo "" >> release_notes.md
-          echo "**Caddy Version:** \`$(./${{ matrix.output_name }} version | awk '{print $1}')\`" >> release_notes.md
-          echo "**Go Version:** \`$(go version | awk '{print $3}')\`" >> release_notes.md
+          echo "- **Version**: \`$(./${{ matrix.output_name }} version | awk '{print $1}')\`" >> release_notes.md
+          echo "- **Go Version**: \`$(go version | awk '{print $3}')\`" >> release_notes.md
           echo "" >> release_notes.md
-          echo "### 🔌 Included Plugins" >> release_notes.md
-          echo "\`\`\`text" >> release_notes.md
-          ./${{ matrix.output_name }} list-modules --packages >> release_notes.md
-          echo "\`\`\`" >> release_notes.md
+          
+          echo "### 🔌 Plugins" >> release_notes.md
+          # ----------------------------------------------------------------
+          # 魔法清洗脚本：
+          # 1. list-modules: 列出所有模块
+          # 2. grep github.com: 只保留第三方库的行 (Standard modules通常不带url或被下一步过滤)
+          # 3. grep -v: 排除 Caddy 核心自身
+          # 4. awk '{print $NF}': 提取最后一列 (处理 => 替换的情况，取最终生效的库)
+          # 5. sort -u: 排序并去重 (把几十个子模块合并为一个仓库地址)
+          # 6. awk: 格式化为 Markdown 链接列表
+          # ----------------------------------------------------------------
+          ./${{ matrix.output_name }} list-modules --packages \
+            | grep "github.com" \
+            | grep -v "github.com/caddyserver/caddy/v2" \
+            | awk '{print $NF}' \
+            | sort -u \
+            | awk '{print "- [" $0 "](https://" $0 ")"}' >> release_notes.md
+            
+          echo "" >> release_notes.md
 
       # [新增] 生成 SHA256 校验和
       - name: Generate Checksum
@@ -112,9 +127,11 @@ jobs:
       - name: Generate Release Vars
         id: vars
         env:
-          TZ: 'Asia/Shanghai' # 关键点：设置时区
+          TZ: 'Asia/Shanghai'
         run: |
-          echo "DATE=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+          # 格式示例: 2025-12-18 10:32 (Beijing)
+          echo "DATE=$(date +'%Y-%m-%d %H:%M (Beijing)')" >> $GITHUB_ENV
+          # Tag 保持紧凑格式
           echo "TAG_NAME=v$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
 
       # [优化] 组合 Release Body
