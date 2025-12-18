@@ -13,7 +13,6 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "")
 
 def get_current_modules():
     """获取当前所有 Direct 依赖（即 tools.go 里引用的插件）"""
-    # 关键修改：通过 Go 命令获取详细 JSON，包含 Replace 信息
     result = subprocess.run(['go', 'list', '-m', '-json', 'all'], capture_output=True, text=True)
     modules = {}
     
@@ -24,23 +23,23 @@ def get_current_modules():
             obj, size = decoder.raw_decode(result.stdout[pos:])
             
             # 过滤逻辑：
-            # 1. 必须是 github.com 开头
-            # 2. 不能是 Indirect (间接依赖)，只看我们在 tools.go 里显式引入的
-            # 3. 排除 caddy 主程序自己
-            if ('Path' in obj 
+            # 1. 排除主模块自身 (Main: true) -> 这就是之前报错的原因！
+            # 2. 必须是 github.com 开头
+            # 3. 不能是 Indirect (间接依赖)
+            # 4. 排除 caddy 主程序
+            if (not obj.get('Main') 
+                and 'Path' in obj 
                 and "github.com" in obj['Path'] 
                 and not obj.get('Indirect', False)
                 and obj['Path'] != "github.com/caddyserver/caddy"):
                 
-                # 记录详细信息，包括是否被 Replace
                 modules[obj['Path']] = {
                     "Version": obj.get("Version", "unknown"),
                     "Time": obj.get("Time", ""),
-                    "Replace": obj.get("Replace", None) # 捕获 Replace 字段
+                    "Replace": obj.get("Replace", None)
                 }
             pos += size
         except Exception as e:
-            # 容错处理
             pos += 1
             
     return modules
@@ -48,7 +47,6 @@ def get_current_modules():
 def get_previous_manifest():
     url = f"https://github.com/{REPO}/releases/latest/download/{MANIFEST_FILE}"
     try:
-        # print(f"Downloading previous manifest from {url}...")
         with urllib.request.urlopen(url) as response:
             return json.loads(response.read().decode())
     except Exception:
@@ -72,19 +70,12 @@ def format_date_simple(iso_str):
 def generate_notes(current, previous):
     diff_lines = []
     
-    # 既然 current 里过滤掉了 caddy 核心，我们需要单独拿一下 caddy 核心版本
-    # 这里简单处理，只对比插件变动
-    
     diff_lines.append(f"### 📦 Plugin Changes\n")
     has_changes = False
     
     for name, info in current.items():
         prev_info = previous.get(name, {})
         curr_ver = info['Version']
-        
-        # 如果有 Replace，版本号可能在 Replace 对象里，这里为了日志简洁，
-        # 我们优先显示 Replace 里的版本，如果都在，显示原始版本也行。
-        # 这里维持原样，通常 info['Version'] 是最终解析版本
         
         prev_ver = prev_info.get('Version', 'N/A')
         curr_date = format_date_simple(info['Time'])
@@ -113,21 +104,16 @@ def generate_notes(current, previous):
         ver = info['Version']
         time_bj = parse_time(info['Time'])
         
-        # 生成表格链接
         link = f"[{name.split('/')[-1]}](https://{name})"
         table_lines.append(f"| {link} | `{ver}` | {time_bj} |")
         
-        # === 核心修复逻辑 ===
-        # 如果存在 Replace (例如 forwardproxy)，生成特殊的 xcaddy 参数
-        # 格式: --with github.com/A=github.com/B@version
+        # 处理 Replace 指令
         if info.get('Replace'):
             rep = info['Replace']
             rep_path = rep['Path']
             rep_ver = rep['Version']
-            # 这里生成: --with github.com/old=github.com/new@v1.2.3
             xcaddy_args.append(f"--with {name}={rep_path}@{rep_ver}")
         else:
-            # 普通插件: --with github.com/A@v1.2.3
             xcaddy_args.append(f"--with {name}@{ver}")
 
     return "\n".join(diff_lines + table_lines), " ".join(xcaddy_args)
@@ -138,7 +124,6 @@ def main():
     
     notes, build_args = generate_notes(current_modules, previous_modules)
     
-    # 打印生成的参数，方便在 Actions 日志里调试
     print(f"Generated xcaddy args: {build_args}")
 
     with open(RELEASE_NOTE_FILE, 'w') as f:
