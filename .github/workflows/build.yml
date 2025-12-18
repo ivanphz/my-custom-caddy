@@ -6,14 +6,12 @@ on:
     tags:
       - "v*"
 
-# 将权限提升到全局，确保 build 和 release 都能有权限（Release 任务最需要写权限）
 permissions:
   contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     strategy:
       matrix:
         include:
@@ -28,12 +26,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 修正：使用 stable 或具体的现有版本
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.5' 
+          go-version: 'stable' 
           check-latest: true
-          cache: false
+          cache: true
 
       - name: Install xcaddy
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
@@ -64,38 +63,86 @@ jobs:
             --with github.com/caddyserver/jsonc-adapter \
             --with github.com/mholt/caddy-events-exec
 
-      - name: Upload Artifact (Backup)
+      # [新增] 生成构建信息 (仅限 AMD64 运行一次，用于生成 Release Note)
+      - name: Generate Build Info
+        if: matrix.goarch == 'amd64'
+        run: |
+          chmod +x ${{ matrix.output_name }}
+          echo "## 📦 Build Info" > release_notes.md
+          echo "" >> release_notes.md
+          echo "**Caddy Version:** \`$(./${{ matrix.output_name }} version | awk '{print $1}')\`" >> release_notes.md
+          echo "**Go Version:** \`$(go version | awk '{print $3}')\`" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### 🔌 Included Plugins" >> release_notes.md
+          echo "\`\`\`text" >> release_notes.md
+          ./${{ matrix.output_name }} list-modules --packages >> release_notes.md
+          echo "\`\`\`" >> release_notes.md
+
+      # [新增] 生成 SHA256 校验和
+      - name: Generate Checksum
+        run: |
+          sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.output_name }}
-          path: ${{ matrix.output_name }}
+          name: caddy-${{ matrix.goarch }}
+          path: |
+            ${{ matrix.output_name }}
+            ${{ matrix.output_name }}.sha256
+            release_notes.md
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download Artifacts
+      - name: Download Artifacts (AMD64)
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: caddy-amd64
+          path: artifacts/amd64
 
+      - name: Download Artifacts (ARM64)
+        uses: actions/download-artifact@v4
+        with:
+          name: caddy-arm64
+          path: artifacts/arm64
+
+      # [修正] 设置时区并生成符合要求的 Tag
       - name: Generate Release Vars
         id: vars
+        env:
+          TZ: 'Asia/Shanghai' # 关键点：设置时区
         run: |
-          echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
-          echo "TIME_TAG=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
+          echo "DATE=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+          echo "TAG_NAME=v$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
+
+      # [优化] 组合 Release Body
+      - name: Prepare Release Body
+        run: |
+          # 读取构建时生成的插件列表
+          cat artifacts/amd64/release_notes.md > body.md
+          echo "" >> body.md
+          echo "---" >> body.md
+          echo "构建时间: ${{ env.DATE }} (CST)" >> body.md
+          echo "包含架构: AMD64, ARM64" >> body.md
+          echo "" >> body.md
+          echo "#### SHA256 Checksums" >> body.md
+          echo "\`\`\`" >> body.md
+          cat artifacts/amd64/*.sha256 >> body.md
+          cat artifacts/arm64/*.sha256 >> body.md
+          echo "\`\`\`" >> body.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ env.TIME_TAG }}
-          name: Custom Caddy - ${{ env.DATE }}
-          body: |
-            自动构建完成。
-            构建时间: ${{ env.DATE }}
-            包含架构: AMD64, ARM64
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.TAG_NAME }} # 标题与Tag一致，方便复制
+          body_path: body.md      # 使用动态生成的内容
           files: |
-            artifacts/caddy-linux-amd64/caddy-linux-amd64
-            artifacts/caddy-linux-arm64/caddy-linux-arm64
+            artifacts/amd64/caddy-linux-amd64
+            artifacts/amd64/caddy-linux-amd64.sha256
+            artifacts/arm64/caddy-linux-arm64
+            artifacts/arm64/caddy-linux-arm64.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
