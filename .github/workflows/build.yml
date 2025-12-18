@@ -118,7 +118,7 @@ jobs:
           echo "\`\`\`" >> body.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.init.outputs.version_tag }}
           name: ${{ needs.init.outputs.version_tag }}
