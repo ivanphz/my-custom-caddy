@@ -32,6 +32,12 @@ jobs:
           # 2. 清理旧的 replace 规则，保证纯净
           go mod edit -dropreplace=all || true
 
+          # === 关键修复开始：创建占位文件，防止 tidy 删除依赖 ===
+          echo '//go:build tools' > tools.go
+          echo 'package main' >> tools.go
+          echo 'import (' >> tools.go
+          echo '  _ "github.com/caddyserver/caddy/v2"' >> tools.go # 必须保留 Core
+
           # 3. 解析 plugins.txt
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             echo "Processing: $line"
@@ -44,20 +50,31 @@ jobs:
               # 设置 replace 并拉取
               go mod edit -replace $ORIGINAL=$REPLACEMENT
               go get $ORIGINAL # Go 会自动解析到替身
+              
+              # 【修复】写入 tools.go
+              echo "  _ \"$ORIGINAL\"" >> tools.go
             else
               # 普通插件: 拉取最新
               go get $line@latest
+              
+              # 【修复】写入 tools.go
+              echo "  _ \"$line\"" >> tools.go
             fi
           done
 
+          # 结束 tools.go 写入
+          echo ')' >> tools.go
+          # === 关键修复结束 ===
+
           # 4. 整理依赖
+          # 现在有了 tools.go，tidy 会保留所有插件，并生成正确的 go.sum
           go mod tidy
 
       - name: Check for Changes
         id: git-check
         run: |
-          # 检查文件变动
-          if git diff --quiet go.mod go.sum; then
+          # 检查文件变动 (加入 tools.go)
+          if git diff --quiet go.mod go.sum tools.go; then
             echo "No changes detected."
             echo "changed=false" >> $GITHUB_OUTPUT
           else
@@ -70,6 +87,7 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add go.mod go.sum
+          # 必须把 tools.go 也提交上去，否则下次还会出问题
+          git add go.mod go.sum tools.go
           git commit -m "chore: update dependencies from plugins.txt"
           git push
