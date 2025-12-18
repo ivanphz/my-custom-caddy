@@ -1,0 +1,137 @@
+name: Build Custom Caddy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'go.mod'
+      - 'scripts/**'
+
+permissions:
+  contents: write
+
+jobs:
+  # 🟢 新增：初始化任务，确保所有后续任务使用同一个版本号
+  init:
+    runs-on: ubuntu-latest
+    outputs:
+      version_tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - name: Generate Global Version Tag
+        id: ver
+        run: |
+          TZ='Asia/Shanghai' echo "tag=v$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+
+  build:
+    needs: init  # 依赖 init 任务
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            goos: linux
+            output_name: caddy-linux-amd64
+          - goarch: arm64
+            goos: linux
+            output_name: caddy-linux-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      # 🟢 修复：直接使用 init 传过来的版本号
+      - name: Set Version Logic
+        run: echo "VERSION_TAG=${{ needs.init.outputs.version_tag }}" >> $GITHUB_ENV
+
+      # 运行智能脚本 (生成参数和日志)
+      - name: Analyze Dependencies & Generate Logs
+        id: analyze
+        run: python3 scripts/gen_info.py
+
+      # 编译核心
+      - name: Build Caddy (${{ matrix.goarch }})
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          # 注入全局统一的版本号
+          export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ env.VERSION_TAG }}"
+          
+          ~/go/bin/xcaddy build \
+            --output ${{ matrix.output_name }} \
+            ${{ steps.analyze.outputs.XCADDY_ARGS }}
+
+      # 组合 Release Note (仅在 amd64 执行，避免重复)
+      - name: Assemble Release Note
+        if: matrix.goarch == 'amd64'
+        run: |
+          chmod +x ${{ matrix.output_name }}
+          echo "## ${{ env.VERSION_TAG }} Latest" > final_note.md
+          cat release_notes.md >> final_note.md
+          echo "" >> final_note.md
+          echo "### 🚀 Build Info" >> final_note.md
+          echo "- **Custom Version**: \`${{ env.VERSION_TAG }}\`" >> final_note.md
+          echo "- **Caddy Output**: \`$(./${{ matrix.output_name }} version)\`" >> final_note.md
+          echo "- **Go Version**: \`$(go version | awk '{print $3}')\`" >> final_note.md
+          echo "- **Build Time**: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S (Beijing)')" >> final_note.md
+
+      - name: Generate Checksum
+        run: sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddy-${{ matrix.goarch }}
+          path: |
+            ${{ matrix.output_name }}
+            ${{ matrix.output_name }}.sha256
+            final_note.md
+            manifest.json
+
+  release:
+    needs: [init, build] # 依赖 init 和 build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare Release Body
+        run: |
+          # 只使用 amd64 里的 note 和 manifest，防止冲突
+          cat artifacts/caddy-amd64/final_note.md > body.md
+          
+          echo "" >> body.md
+          echo "### 🛡️ SHA256 Checksums" >> body.md
+          echo "\`\`\`" >> body.md
+          cat artifacts/caddy-amd64/*.sha256 >> body.md
+          cat artifacts/caddy-arm64/*.sha256 >> body.md
+          echo "\`\`\`" >> body.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.init.outputs.version_tag }} # 🟢 修复：使用 init 的版本号
+          name: ${{ needs.init.outputs.version_tag }}
+          body_path: body.md
+          files: |
+            artifacts/caddy-amd64/caddy-linux-amd64
+            artifacts/caddy-amd64/caddy-linux-amd64.sha256
+            artifacts/caddy-arm64/caddy-linux-arm64
+            artifacts/caddy-arm64/caddy-linux-arm64.sha256
+            artifacts/caddy-amd64/manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
