@@ -7,12 +7,14 @@ replace github.com/caddyserver/forwardproxy => github.com/klzgrad/forwardproxy v
 require (
 	github.com/LeenHawk/caddy-edgeone-ip v0.1.1
 	github.com/WeidiDeng/caddy-cloudflare-ip v0.0.0-20231130002422-f53b62aa13cb
+	github.com/caddy-dns/tencentcloud v0.4.3
 	github.com/caddyserver/caddy/v2 v2.10.2
 	github.com/caddyserver/forwardproxy v0.0.0-20251013200746-bb364cc53204
 	github.com/caddyserver/jsonc-adapter v0.0.0-20200325004025-825ee096306c
 	github.com/fvbommel/caddy-combine-ip-ranges v0.0.1
 	github.com/greenpau/caddy-security v1.1.31
 	github.com/imgk/caddy-trojan v0.2.10-2
+	github.com/lanrat/caddy-dynamic-remoteip v0.0.0-20231007025615-f72ed4fc7b9c
 	github.com/mholt/caddy-events-exec v0.1.0
 	github.com/mholt/caddy-l4 v0.0.0-20251209130418-1a3490ef786a
 	github.com/mholt/caddy-ratelimit v0.1.0
@@ -20,6 +22,7 @@ require (
 	github.com/monobilisim/caddy-ip-list v0.0.0-20250818180736-cd5c45325ade
 	github.com/okrc/caddy-uploadcert-tencentcloud v0.1.2
 	github.com/porech/caddy-maxmind-geolocation v1.0.1
+	github.com/tuzzmaniandevil/caddy-dynamic-clientip v1.0.5
 	github.com/xcaddyplugins/caddy-trusted-cloudfront v0.0.0-20240604042247-0a0864e80f1c
 )
 
@@ -91,6 +94,7 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
+	github.com/libdns/tencentcloud v1.4.3 // indirect
 	github.com/manifoldco/promptui v0.9.0 // indirect
 	github.com/mastercactapus/proxyprotocol v0.0.4 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
