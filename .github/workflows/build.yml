@@ -70,7 +70,7 @@ jobs:
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 2. 编译
+      # 2. 手动构建（不用 xcaddy）
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -78,10 +78,58 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          export XCADDY_GO_BUILD_FLAGS="-ldflags=-X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
-          ~/go/bin/xcaddy build \
-            --output ${{ matrix.output_name }} \
-            ${{ steps.args.outputs.XCADDY_ARGS }}
+          # 创建构建目录
+          mkdir -p build
+          cd build
+          
+          # 生成 main.go
+          cat > main.go << 'MAINEOF'
+          package main
+          
+          import (
+              caddycmd "github.com/caddyserver/caddy/v2/cmd"
+              _ "github.com/caddyserver/caddy/v2/modules/standard"
+          MAINEOF
+          
+          # 从 plugins.txt 读取并添加 import
+          grep -vE '^\s*#|^\s*$' ../plugins.txt | while read -r line; do
+            if [[ "$line" == *"="* ]]; then
+              PKG=$(echo "$line" | cut -d'=' -f1 | xargs)
+            else
+              PKG=$(echo "$line" | xargs)
+            fi
+            if [[ "$PKG" != "github.com/caddyserver/caddy/v2" ]]; then
+              echo "    _ \"$PKG\"" >> main.go
+            fi
+          done
+          
+          cat >> main.go << 'MAINEOF'
+          )
+          
+          func main() {
+              caddycmd.Main()
+          }
+          MAINEOF
+          
+          # 初始化 go module
+          go mod init caddy
+          
+          # 处理 replace 指令
+          grep '=' ../plugins.txt | while read -r line; do
+            ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
+            REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
+            go mod edit -replace $ORIGINAL=$REPLACEMENT
+          done
+          
+          # 获取依赖
+          go get ./...
+          go mod tidy
+          
+          # 编译
+          go build -o "../${{ matrix.output_name }}" \
+            -ldflags="-w -s -X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}" \
+            -trimpath \
+            -tags nobadger,nomysql,nopgx
 
       # ============================================================
       # 2.5 测试版本输出（新增，用于调试）
