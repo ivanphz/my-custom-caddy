@@ -6,13 +6,13 @@ on:
     branches:
       - main
     paths:
-      - 'go.mod' # 仅监听依赖变化
+      - 'go.mod' # 依赖变动时触发
 
 permissions:
   contents: write
 
 env:
-  TZ: Asia/Shanghai # 全局时区
+  TZ: Asia/Shanghai
 
 jobs:
   init:
@@ -24,7 +24,6 @@ jobs:
       - name: Generate Global Version Tag
         id: ver
         run: |
-          # 强制北京时间生成
           export TZ='Asia/Shanghai'
           echo "tag=v$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
           echo "time=$(date +'%Y-%m-%d %H:%M:%S (Beijing)')" >> $GITHUB_OUTPUT
@@ -55,21 +54,18 @@ jobs:
       - name: Install xcaddy
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-      - name: Analyze Dependencies
-        id: analyze
-        run: python3 scripts/gen_info.py
-
       - name: Build Caddy (${{ matrix.goarch }})
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          # 既然 update_deps 已经生成了完美的 go.mod，直接用它编译即可
+          # xcaddy build . 会自动利用当前的 go.mod
           export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
           
           ~/go/bin/xcaddy build \
-            --output ${{ matrix.output_name }} \
-            ${{ steps.analyze.outputs.XCADDY_ARGS }}
+            --output ${{ matrix.output_name }}
 
       - name: Generate Comprehensive Release Notes
         if: matrix.goarch == 'amd64'
@@ -81,42 +77,33 @@ jobs:
           # 1. 生成当前的模块清单
           go list -m -json all > go_modules.json
 
-          # 2. 尝试下载上一个 Release 的模块清单 (用于对比)
+          # 2. 尝试下载上一个 Release 的模块清单
           echo "Downloading previous build info..."
-          # 容错：如果是第一次运行或下载失败，生成一个空数组，视为全部是新增
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # 3. 准备 Python 脚本进行智能对比 (Shell 处理复杂 JSON 对比太难了，用 Python)
+          # 3. Python 智能对比逻辑
           cat <<'EOF' > diff_logic.py
           import json
           import os
-          import re
-          from datetime import datetime, timedelta
 
-          # 工具：格式化版本号 (处理伪版本)
           def fmt_ver(v):
-              if '-' in v and len(v.split('-')[-1]) >= 12: # 检测伪版本
+              if '-' in v and len(v.split('-')[-1]) >= 12:
                   return f"Commit: {v.split('-')[-1][:7]}"
               return v
 
-          # 工具：简化名称 (去掉域名)
           def fmt_name(path):
               return "/".join(path.split("/")[-2:]) if "/" in path else path
 
-          # 1. 加载数据
           def load_json(fn):
               try:
                   with open(fn, 'r') as f:
                       data = json.load(f)
-                      # 转换为字典: Path -> Info
-                      # 优先使用 Replace 后的信息
                       res = {}
-                      if isinstance(data, dict): data = [data] # 处理单条记录的情况
+                      if isinstance(data, dict): data = [data]
                       for item in data:
                           path = item.get('Path')
                           if item.get('Replace'):
                               res[path] = item['Replace']
-                              res[path]['OriginalPath'] = path # 记录原始路径以便匹配
                           else:
                               res[path] = item
                       return res
@@ -126,98 +113,83 @@ jobs:
           curr = load_json('go_modules.json')
           prev = load_json('prev_go_modules.json')
 
-          # 2. 读取 plugins.txt 确定我们关注的插件列表
-          # (避免把底层的 Go 依赖变动也报出来，太吵)
-          tracked_plugins = set()
+          # 提取当前关注列表
+          tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
                   for line in f:
                       line = line.strip()
                       if not line or line.startswith('#'): continue
-                      # 处理 name=replace
                       if '=' in line: line = line.split('=')[0].strip()
-                      tracked_plugins.add(line)
+                      tracked.add(line)
 
           changes_caddy = []
           changes_other = []
 
-          # 3. 核心对比逻辑
+          # 并集：所有涉及的路径
           all_paths = set(curr.keys()) | set(prev.keys())
           
           for path in all_paths:
-              # 过滤：只关注 plugins.txt 里的，或者 Caddy 核心，或者是之前存在过的插件
-              is_caddy_core = (path == "github.com/caddyserver/caddy/v2")
+              is_caddy = (path == "github.com/caddyserver/caddy/v2")
               
-              # 如果既不是Caddy，也不在plugins.txt里，且不看起来像个插件(简单的过滤)，跳过
-              # 这里的逻辑是：如果它出现在 plugins.txt 里，或者它是被删除的插件，我们都要记录
-              relevant = (path in tracked_plugins) or is_caddy_core
-              
-              # 针对“Removed”的情况，path 不在 curr 里，没法查 plugins.txt (假如用户删了行)
-              # 所以我们放宽一点：如果是 Removed，且看起来像 github 仓库，就列出来
-              if path not in curr and "github.com" in path:
-                  relevant = True
+              # 关键逻辑：如果它在当前的 plugins.txt，或者它是 Caddy，或者它是被删除的插件(在prev但不在curr)
+              # 我们都要关注
+              is_removed = (path in prev and path not in curr)
+              is_relevant = (path in tracked) or is_caddy or is_removed
 
-              if not relevant: continue
+              # 如果被删除的，且不是 github 仓库，可能是底层依赖，忽略
+              if is_removed and "github.com" not in path:
+                  is_relevant = False
+
+              if not is_relevant: continue
 
               name = fmt_name(path)
               link = f"https://{path}"
 
-              # A. 新增 (Added)
               if path not in prev:
                   ver = fmt_ver(curr[path]['Version'])
                   msg = f"✨ **Added**: [{name}]({link}) `{ver}`"
-                  if is_caddy_core: changes_caddy.append(msg)
+                  if is_caddy: changes_caddy.append(msg)
                   else: changes_other.append(msg)
-
-              # B. 删除 (Removed)
               elif path not in curr:
                   msg = f"🗑️ **Removed**: [{name}]({link})"
-                  if is_caddy_core: changes_caddy.append(msg)
+                  if is_caddy: changes_caddy.append(msg)
                   else: changes_other.append(msg)
-
-              # C. 更新 (Updated)
               elif prev[path]['Version'] != curr[path]['Version']:
                   v_old = fmt_ver(prev[path]['Version'])
                   v_new = fmt_ver(curr[path]['Version'])
                   msg = f"⬆️ **Updated**: [{name}]({link}) `{v_old}` -> `{v_new}`"
-                  if is_caddy_core: changes_caddy.append(msg)
+                  if is_caddy: changes_caddy.append(msg)
                   else: changes_other.append(msg)
 
-          # 4. 输出变动日志
           if not changes_caddy and not changes_other:
               print("No plugin updates detected in this build.")
           else:
               for c in changes_caddy: print(c)
-              for c in sorted(changes_other): print(c) # 首字母排序
+              for c in sorted(changes_other): print(c)
           EOF
 
-          # 4. 执行 Python 脚本生成变动内容
           python3 diff_logic.py > change_log.md
 
-          # 5. 准备基础变量
+          # 4. 组装 Final Note
           CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
-          
-          # 获取 Caddy Core 信息 (用于 Build Info)
-          CADDY_CORE_INFO=$(jq -r 'select(.Path == "github.com/caddyserver/caddy/v2") | "\(.Version) (\(.Sum))"' go_modules.json)
+          CADDY_INFO=$(jq -r 'select(.Path == "github.com/caddyserver/caddy/v2") | "\(.Version) (\(.Sum))"' go_modules.json)
 
-          # 6. 组装 final_note.md
           cat <<EOF > final_note.md
           # $CUSTOM_VERSION
 
           ### 🚀 Build Info
           - **Custom Version**: $CUSTOM_VERSION
-          - **Caddy Core**: \`$CADDY_CORE_INFO\`
+          - **Caddy Core**: \`$CADDY_INFO\`
           - **Go Version**: \`$GO_VERSION\`
           - **Build Time**: $BUILD_TIME
 
           ### 📦 Plugin Changes
           EOF
-          
-          # 插入变动日志
           cat change_log.md >> final_note.md
-          
+
           cat <<EOF >> final_note.md
 
           ### 🔌 Installed Plugins Status
@@ -225,33 +197,26 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
-          # 7. 生成插件列表表格 (逻辑保持不变)
+          # 生成列表
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
-            if [[ "$line" == *"="* ]]; then SEARCH_KEY=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH_KEY=$(echo "$line" | xargs); fi
-            if [[ "$SEARCH_KEY" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
+            if [[ "$line" == *"="* ]]; then SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH=$(echo "$line" | xargs); fi
+            if [[ "$SEARCH" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
 
-            INFO_JSON=$(jq -r --arg name "$SEARCH_KEY" 'select(.Path == $name) | if .Replace != null then {path: .Replace.Path, ver: .Replace.Version, time: .Replace.Time} else {path: .Path, ver: .Version, time: .Time} end' go_modules.json)
-            if [[ -z "$INFO_JSON" || "$INFO_JSON" == "null" ]]; then continue; fi
-
-            REAL_PATH=$(echo "$INFO_JSON" | jq -r .path)
-            RAW_VER=$(echo "$INFO_JSON" | jq -r .ver)
-            RAW_TIME=$(echo "$INFO_JSON" | jq -r .time)
+            INFO=$(jq -r --arg n "$SEARCH" 'select(.Path == $n) | if .Replace!=null then {p:.Replace.Path, v:.Replace.Version, t:.Replace.Time} else {p:.Path, v:.Version, t:.Time} end' go_modules.json)
+            if [[ -z "$INFO" || "$INFO" == "null" ]]; then continue; fi
             
-            DISPLAY_NAME=$(echo "$REAL_PATH" | cut -d'/' -f2-)
-            LINK="https://$REAL_PATH"
+            PATH_R=$(echo "$INFO" | jq -r .p)
+            VER_R=$(echo "$INFO" | jq -r .v)
+            TIME_R=$(echo "$INFO" | jq -r .t)
             
-            DISPLAY_VER="$RAW_VER"
-            if [[ "$RAW_VER" =~ .*-.*-.* ]]; then
-                COMMIT_HASH=$(echo "$RAW_VER" | awk -F- '{print $NF}' | cut -c1-7)
-                DISPLAY_VER="Commit: $COMMIT_HASH"
-            fi
+            NAME_DISP=$(echo "$PATH_R" | cut -d'/' -f2-)
+            VER_DISP="$VER_R"
+            if [[ "$VER_R" =~ .*-.*-.* ]]; then VER_DISP="Commit: $(echo $VER_R | awk -F- '{print $NF}' | cut -c1-7)"; fi
             
-            if [[ -n "$RAW_TIME" && "$RAW_TIME" != "null" ]]; then
-                DISPLAY_TIME=$(date -d "$RAW_TIME +8 hours" '+%Y-%m-%d %H:%M:%S')
-            else
-                DISPLAY_TIME="N/A"
-            fi
-            echo "| [$DISPLAY_NAME]($LINK) | $DISPLAY_VER | $DISPLAY_TIME |" >> final_note.md
+            TIME_DISP="N/A"
+            if [[ -n "$TIME_R" && "$TIME_R" != "null" ]]; then TIME_DISP=$(date -d "$TIME_R +8 hours" '+%Y-%m-%d %H:%M:%S'); fi
+            
+            echo "| [$NAME_DISP](https://$PATH_R) | $VER_DISP | $TIME_DISP |" >> final_note.md
           done
 
       - name: Generate Checksum
@@ -299,5 +264,6 @@ jobs:
             artifacts/caddy-arm64/caddy-linux-arm64
             artifacts/caddy-arm64/caddy-linux-arm64.sha256
             artifacts/caddy-amd64/manifest.json
+            artifacts/caddy-amd64/go_modules.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
