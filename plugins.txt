@@ -3,15 +3,3 @@ github.com/caddyserver/caddy/v2
 
 # === GFW ===
 # 追踪 klzgrad 的 naive 分支
-github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive
-github.com/imgk/caddy-trojan
-github.com/mholt/caddy-l4
-
-# === 其他 ===
-
-# === http.ip_sources ===
-github.com/fvbommel/caddy-combine-ip-ranges
-github.com/LeenHawk/caddy-edgeone-ip
-github.com/monobilisim/caddy-ip-list
-github.com/WeidiDeng/caddy-cloudflare-ip
-github.com/xcaddyplugins/caddy-trusted-cloudfront
