@@ -11,9 +11,7 @@ github.com/mholt/caddy-l4
 github.com/caddyserver/jsonc-adapter
 github.com/greenpau/caddy-security
 github.com/mholt/caddy-events-exec
-github.com/mholt/caddy-ratelimit
-github.com/mholt/caddy-webdav
-github.com/okrc/caddy-uploadcert-tencentcloud
+
 github.com/porech/caddy-maxmind-geolocation
 
 github.com/caddy-dns/tencentcloud
@@ -26,3 +24,6 @@ github.com/LeenHawk/caddy-edgeone-ip
 github.com/monobilisim/caddy-ip-list
 github.com/WeidiDeng/caddy-cloudflare-ip
 github.com/xcaddyplugins/caddy-trusted-cloudfront
+github.com/mholt/caddy-ratelimit
+github.com/mholt/caddy-webdav
+github.com/okrc/caddy-uploadcert-tencentcloud
