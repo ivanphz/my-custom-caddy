@@ -66,10 +66,7 @@ jobs:
             { printf "--with %s ", $1 }
           ' plugins.txt)
 
-          if [ -z "$ARGS" ]; then
-            echo "❌ Error: 没找到插件！Build 终止。"
-            exit 1
-          fi
+          # 已移除“无插件报错退出”的逻辑
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
@@ -252,7 +249,6 @@ jobs:
             ${{ matrix.output_name }}
             ${{ matrix.output_name }}.sha256
             final_note.md
-            manifest.json
             go_modules.json
 
   release:
@@ -285,7 +281,6 @@ jobs:
             artifacts/caddy-amd64/caddy-linux-amd64.sha256
             artifacts/caddy-arm64/caddy-linux-arm64
             artifacts/caddy-arm64/caddy-linux-arm64.sha256
-            artifacts/caddy-amd64/manifest.json
             artifacts/caddy-amd64/go_modules.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
