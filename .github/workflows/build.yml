@@ -94,14 +94,14 @@ jobs:
         run: |
           chmod +x ${{ matrix.output_name }}
           
-          # 【修复点 1】将 Stream 转换为标准 JSON 数组，否则 Python 读不出来
+          # 1. 核心修复：将 Stream 转换为标准 JSON 数组
           go list -m -json all | jq -s '.' > go_modules.json
 
-          # 尝试下载上次的清单
+          # 2. 下载对比文件
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # Python 对比逻辑
+          # 3. Python 对比脚本 (已优化：屏蔽Core + 显示真实名称)
           cat <<'EOF' > diff_logic.py
           import json
           import os
@@ -118,7 +118,6 @@ jobs:
               try:
                   with open(fn, 'r') as f:
                       data = json.load(f)
-                      # data 此时必定是 list
                       res = {}
                       for item in data:
                           path = item.get('Path')
@@ -129,14 +128,11 @@ jobs:
                               res[path] = item
                       return res
               except Exception as e:
-                  # 打印错误方便排查，但不让流水线红灯
-                  sys.stderr.write(f"Warning: Failed to load {fn}: {e}\n")
                   return {}
 
           curr = load_json('go_modules.json')
           prev = load_json('prev_go_modules.json')
 
-          # 如果 curr 是空的，说明 go list 出了大问题，这里不能通过
           if not curr:
               print("⚠️ Error: Failed to parse current module list.")
               sys.exit(0)
@@ -150,52 +146,57 @@ jobs:
                       if '=' in line: line = line.split('=')[0].strip()
                       tracked.add(line)
 
-          changes_caddy = []
           changes_other = []
 
           all_paths = set(curr.keys()) | set(prev.keys())
           
           for path in all_paths:
-              is_caddy = (path == "github.com/caddyserver/caddy/v2")
+              # 【修复点1】彻底忽略 Caddy Core，因为它在 Build Info 里展示
+              if path == "github.com/caddyserver/caddy/v2": continue
+
               is_removed = (path in prev and path not in curr)
-              # 只有在 plugins.txt 里的，或者是 Caddy，或者是被删的插件，才显示
-              is_relevant = (path in tracked) or is_caddy or (is_removed and "github.com" in path)
+              # 只有在 plugins.txt 里的，或者看起来像插件的才显示
+              is_relevant = (path in tracked) or (is_removed and "github.com" in path)
 
               if not is_relevant: continue
 
-              name = fmt_name(path)
-              link = f"https://{path}"
+              # 【修复点2】获取真实路径用于显示 (处理 replace)
+              # 如果在 curr 里，用 curr 的 Path (可能是替换后的)
+              # 如果是删除的，尝试用 prev 的 Path
+              display_path = path
+              if path in curr:
+                  display_path = curr[path].get('Path', path)
+              elif path in prev:
+                  display_path = prev[path].get('Path', path)
+
+              name = fmt_name(display_path)
+              link = f"https://{display_path}"
 
               if path not in prev:
                   ver = fmt_ver(curr[path]['Version'])
                   msg = f"✨ **Added**: [{name}]({link}) `{ver}`"
-                  if is_caddy: changes_caddy.append(msg)
-                  else: changes_other.append(msg)
+                  changes_other.append(msg)
               elif path not in curr:
                   msg = f"🗑️ **Removed**: [{name}]({link})"
-                  if is_caddy: changes_caddy.append(msg)
-                  else: changes_other.append(msg)
+                  changes_other.append(msg)
               elif prev[path]['Version'] != curr[path]['Version']:
                   v_old = fmt_ver(prev[path]['Version'])
                   v_new = fmt_ver(curr[path]['Version'])
                   msg = f"⬆️ **Updated**: [{name}]({link}) `{v_old}` -> `{v_new}`"
-                  if is_caddy: changes_caddy.append(msg)
-                  else: changes_other.append(msg)
+                  changes_other.append(msg)
 
-          if not changes_caddy and not changes_other:
+          if not changes_other:
               print("No plugin updates detected in this build.")
           else:
-              for c in changes_caddy: print(c)
               for c in sorted(changes_other): print(c)
           EOF
 
           python3 diff_logic.py > change_log.md
 
-          # 组装 MD
+          # 4. 组装 Final Note
           CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
-          # 使用 jq 从数组中提取
           CADDY_INFO=$(jq -r '.[] | select(.Path == "github.com/caddyserver/caddy/v2") | "\(.Version) (\(.Sum))"' go_modules.json)
 
           cat <<EOF > final_note.md
@@ -218,12 +219,11 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
-          # 生成表格 (注意 jq 语法也要适配数组)
+          # 5. 生成表格
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             if [[ "$line" == *"="* ]]; then SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH=$(echo "$line" | xargs); fi
             if [[ "$SEARCH" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
 
-            # 【修复点 2】jq 查询改为从数组中查找 (.[] | select...)
             INFO=$(jq -r --arg n "$SEARCH" '.[] | select(.Path == $n) | if .Replace!=null then {p:.Replace.Path, v:.Replace.Version, t:.Replace.Time} else {p:.Path, v:.Version, t:.Time} end' go_modules.json)
             if [[ -z "$INFO" || "$INFO" == "null" ]]; then continue; fi
             
