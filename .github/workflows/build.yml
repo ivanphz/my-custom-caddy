@@ -54,18 +54,76 @@ jobs:
       - name: Install xcaddy
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
+      # ============================================================
+      # 核心修复 1: 生成 go_modules.json 并计算编译参数
+      # ============================================================
+      - name: Calculate Builder Args
+        id: args
+        run: |
+          # 1. 生成依赖清单 (供编译参数计算 和 日志生成使用)
+          go list -m -json all > go_modules.json
+          
+          # 2. 使用 Python 精确解析版本和替换关系，生成 --with 参数
+          cat <<'EOF' > gen_args.py
+          import json
+          import os
+
+          # 读取 plugins.txt 里的模块名
+          plugins = []
+          if os.path.exists('plugins.txt'):
+              with open('plugins.txt', 'r') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line or line.startswith('#'): continue
+                      if '=' in line: line = line.split('=')[0].strip()
+                      plugins.append(line)
+
+          # 读取 go list 信息
+          try:
+              with open('go_modules.json', 'r') as f:
+                  data = json.load(f)
+                  # 转为字典映射
+                  if isinstance(data, dict): data = [data]
+                  mod_map = {item['Path']: item for item in data if 'Path' in item}
+          except:
+              mod_map = {}
+
+          args = []
+          for p in plugins:
+              if p == "github.com/caddyserver/caddy/v2": continue # 跳过核心
+              
+              info = mod_map.get(p)
+              if info:
+                  # 处理 Replace (如 forwardproxy)
+                  if info.get('Replace'):
+                      rep = info['Replace']
+                      # 格式: --with 原名=替换名@版本
+                      args.append(f"--with {p}={rep['Path']}@{rep['Version']}")
+                  else:
+                      # 格式: --with 原名@版本
+                      args.append(f"--with {p}@{info['Version']}")
+          
+          print(" ".join(args))
+          EOF
+          
+          # 3. 输出到环境变量
+          echo "XCADDY_ARGS=$(python3 gen_args.py)" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # 核心修复 2: 将计算出的参数传给 xcaddy
+      # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # 既然 update_deps 已经生成了完美的 go.mod，直接用它编译即可
-          # xcaddy build . 会自动利用当前的 go.mod
           export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
           
+          # 这里引用了上一步生成的参数
           ~/go/bin/xcaddy build \
-            --output ${{ matrix.output_name }}
+            --output ${{ matrix.output_name }} \
+            ${{ steps.args.outputs.XCADDY_ARGS }}
 
       - name: Generate Comprehensive Release Notes
         if: matrix.goarch == 'amd64'
@@ -74,14 +132,11 @@ jobs:
         run: |
           chmod +x ${{ matrix.output_name }}
           
-          # 1. 生成当前的模块清单
-          go list -m -json all > go_modules.json
-
-          # 2. 尝试下载上一个 Release 的模块清单
+          # go_modules.json 已经在上面生成了，直接用
+          
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # 3. Python 智能对比逻辑
           cat <<'EOF' > diff_logic.py
           import json
           import os
@@ -113,7 +168,6 @@ jobs:
           curr = load_json('go_modules.json')
           prev = load_json('prev_go_modules.json')
 
-          # 提取当前关注列表
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -126,18 +180,16 @@ jobs:
           changes_caddy = []
           changes_other = []
 
-          # 并集：所有涉及的路径
           all_paths = set(curr.keys()) | set(prev.keys())
           
           for path in all_paths:
               is_caddy = (path == "github.com/caddyserver/caddy/v2")
               
-              # 关键逻辑：如果它在当前的 plugins.txt，或者它是 Caddy，或者它是被删除的插件(在prev但不在curr)
-              # 我们都要关注
+              # 逻辑：在关注列表里 OR 是Caddy OR 是被删除的(之前有现在无)
               is_removed = (path in prev and path not in curr)
               is_relevant = (path in tracked) or is_caddy or is_removed
 
-              # 如果被删除的，且不是 github 仓库，可能是底层依赖，忽略
+              # 如果是被删除的，做个简单过滤防止底层依赖噪音
               if is_removed and "github.com" not in path:
                   is_relevant = False
 
@@ -171,7 +223,6 @@ jobs:
 
           python3 diff_logic.py > change_log.md
 
-          # 4. 组装 Final Note
           CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
@@ -197,7 +248,6 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
-          # 生成列表
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             if [[ "$line" == *"="* ]]; then SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH=$(echo "$line" | xargs); fi
             if [[ "$SEARCH" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
