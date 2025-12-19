@@ -56,38 +56,24 @@ jobs:
 
       # ============================================================
       # 1. 简单粗暴地读取 plugins.txt 生成编译参数
-      #    (不再尝试解析版本，只给名字，让 xcaddy 自己去 go.mod 找版本)
       # ============================================================
       - name: Prepare XCaddy Args
         id: args
         run: |
-          # 打印一下文件内容，确保没读错
-          echo "=== plugins.txt content ==="
-          cat plugins.txt
-          echo "==========================="
-
-          # 使用 awk 提取插件名，处理 = 替换逻辑，过滤掉空行和注释
-          # 结果拼接成 --with A --with B ...
           ARGS=$(awk '
-            # 跳过空行和注释
             /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
-            # 跳过 Caddy 核心
             /github.com\/caddyserver\/caddy\/v2/ { next }
-            # 输出格式
             { printf "--with %s ", $1 }
           ' plugins.txt)
 
-          # 检查参数是否为空
           if [ -z "$ARGS" ]; then
             echo "❌ Error: 没找到插件！Build 终止。"
             exit 1
           fi
-
-          echo "✅ Final Args: $ARGS"
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 2. 编译 (一定能编进去)
+      # 2. 编译
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -96,14 +82,10 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
-          
-          # 这里的 XCaddy 会使用 go.mod 里的版本
-          ~/go/bin/xcaddy build \
-            --output ${{ matrix.output_name }} \
-            ${{ steps.args.outputs.XCADDY_ARGS }}
+          ~/go/bin/xcaddy build --output ${{ matrix.output_name }} ${{ steps.args.outputs.XCADDY_ARGS }}
 
       # ============================================================
-      # 3. 生成日志 (这里负责“版本感知”和“增删检测”)
+      # 3. 生成日志 (修复了 JSON 格式问题)
       # ============================================================
       - name: Generate Comprehensive Release Notes
         if: matrix.goarch == 'amd64'
@@ -112,22 +94,21 @@ jobs:
         run: |
           chmod +x ${{ matrix.output_name }}
           
-          # 3.1 生成当前的详细清单 (包含版本、时间、Hash)
-          #     因为 update_deps 已经跑过，go.mod 是新的，所以这里生成的是最新的信息
-          go list -m -json all > go_modules.json
+          # 【修复点 1】将 Stream 转换为标准 JSON 数组，否则 Python 读不出来
+          go list -m -json all | jq -s '.' > go_modules.json
 
-          # 3.2 下载上次的清单做对比
+          # 尝试下载上次的清单
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # 3.3 Python 脚本：负责 "Added / Removed / Updated" 逻辑
+          # Python 对比逻辑
           cat <<'EOF' > diff_logic.py
           import json
           import os
+          import sys
 
           def fmt_ver(v):
-              if '-' in v and len(v.split('-')[-1]) >= 12:
-                  return f"Commit: {v.split('-')[-1][:7]}"
+              if '-' in v and len(v.split('-')[-1]) >= 12: return f"Commit: {v.split('-')[-1][:7]}"
               return v
 
           def fmt_name(path):
@@ -137,22 +118,29 @@ jobs:
               try:
                   with open(fn, 'r') as f:
                       data = json.load(f)
+                      # data 此时必定是 list
                       res = {}
-                      if isinstance(data, dict): data = [data]
                       for item in data:
                           path = item.get('Path')
+                          if not path: continue
                           if item.get('Replace'):
                               res[path] = item['Replace']
                           else:
                               res[path] = item
                       return res
-              except:
+              except Exception as e:
+                  # 打印错误方便排查，但不让流水线红灯
+                  sys.stderr.write(f"Warning: Failed to load {fn}: {e}\n")
                   return {}
 
           curr = load_json('go_modules.json')
           prev = load_json('prev_go_modules.json')
 
-          # 这里的 tracked 列表只为了显示“新增/删除”时高亮重点插件
+          # 如果 curr 是空的，说明 go list 出了大问题，这里不能通过
+          if not curr:
+              print("⚠️ Error: Failed to parse current module list.")
+              sys.exit(0)
+
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -169,12 +157,8 @@ jobs:
           
           for path in all_paths:
               is_caddy = (path == "github.com/caddyserver/caddy/v2")
-              
-              # 如果插件出现在 plugins.txt，或者它是被删除的插件(旧的有，新的没)，就展示
               is_removed = (path in prev and path not in curr)
-              
-              # 简单的过滤：只关心 plugins.txt 里的或者看起来像插件的库，防止底层依赖刷屏
-              # 如果是 Removed，且包含 github.com，我们假设它是插件
+              # 只有在 plugins.txt 里的，或者是 Caddy，或者是被删的插件，才显示
               is_relevant = (path in tracked) or is_caddy or (is_removed and "github.com" in path)
 
               if not is_relevant: continue
@@ -207,11 +191,12 @@ jobs:
 
           python3 diff_logic.py > change_log.md
 
-          # 3.4 组装 Final Note
+          # 组装 MD
           CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
-          CADDY_INFO=$(jq -r 'select(.Path == "github.com/caddyserver/caddy/v2") | "\(.Version) (\(.Sum))"' go_modules.json)
+          # 使用 jq 从数组中提取
+          CADDY_INFO=$(jq -r '.[] | select(.Path == "github.com/caddyserver/caddy/v2") | "\(.Version) (\(.Sum))"' go_modules.json)
 
           cat <<EOF > final_note.md
           # $CUSTOM_VERSION
@@ -233,12 +218,13 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
-          # 3.5 生成表格
+          # 生成表格 (注意 jq 语法也要适配数组)
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             if [[ "$line" == *"="* ]]; then SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH=$(echo "$line" | xargs); fi
             if [[ "$SEARCH" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
 
-            INFO=$(jq -r --arg n "$SEARCH" 'select(.Path == $n) | if .Replace!=null then {p:.Replace.Path, v:.Replace.Version, t:.Replace.Time} else {p:.Path, v:.Version, t:.Time} end' go_modules.json)
+            # 【修复点 2】jq 查询改为从数组中查找 (.[] | select...)
+            INFO=$(jq -r --arg n "$SEARCH" '.[] | select(.Path == $n) | if .Replace!=null then {p:.Replace.Path, v:.Replace.Version, t:.Replace.Time} else {p:.Path, v:.Version, t:.Time} end' go_modules.json)
             if [[ -z "$INFO" || "$INFO" == "null" ]]; then continue; fi
             
             PATH_R=$(echo "$INFO" | jq -r .p)
