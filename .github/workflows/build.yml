@@ -98,13 +98,14 @@ jobs:
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # 3. Python 对比脚本 (逻辑修正：使用 Indirect 属性判定是否为插件)
+          # 3. Python 对比脚本 (已修复 KeyError 崩溃问题)
           cat <<'EOF' > diff_logic.py
           import json
           import os
           import sys
 
           def fmt_ver(v):
+              if not v: return "N/A"
               if '-' in v and len(v.split('-')[-1]) >= 12: return f"Commit: {v.split('-')[-1][:7]}"
               return v
 
@@ -117,15 +118,18 @@ jobs:
                       data = json.load(f)
                       res = {}
                       for item in data:
+                          # 【关键修复1】忽略主模块 (它没有 Version 字段，会导致崩溃)
+                          if item.get('Main'): continue
+                          
                           path = item.get('Path')
                           if not path: continue
+                          
                           # 如果有 Replace，优先读取 Replace 的信息
-                          # 但为了判断 Removed，我们需要保留原始 Item 的 Indirect 状态
+                          # 但保留原始 Item 的 Indirect 状态用于判断
                           if item.get('Replace'):
-                              # 将 Replace 的 Path/Version 覆盖进去，但保留原始 Indirect
                               orig_indirect = item.get('Indirect', False)
                               res[path] = item['Replace']
-                              res[path]['Indirect'] = orig_indirect # 关键：继承 Indirect 属性
+                              res[path]['Indirect'] = orig_indirect
                           else:
                               res[path] = item
                       return res
@@ -139,7 +143,7 @@ jobs:
               print("⚠️ Error: Failed to parse current module list.")
               sys.exit(0)
 
-          # 读取当前 plugins.txt 以确保 Added/Updated 必须显示
+          # 读取当前 plugins.txt
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -162,19 +166,14 @@ jobs:
               is_relevant = False
 
               if path in curr:
-                  # 如果在当前列表中，且在 plugins.txt 里，或者 Indirect=False (直接依赖)，则显示
-                  # 主要处理 Added 和 Updated
+                  # 如果在 plugins.txt 里，或者 Indirect=False (直接依赖)，则显示
                   if path in tracked:
                       is_relevant = True
-                  # 补充：即使不在 plugins.txt (比如手动写在 go.mod)，只要是直接依赖也可能是插件
                   elif curr[path].get('Indirect', False) is False: 
                       is_relevant = True
 
               elif is_removed:
-                  # 【关键修正】
-                  # 如果是被删除的，检查它在“上一版”中是不是直接依赖。
-                  # 如果上一版里 Indirect=False，说明它是旧版的一个插件，现在被删了 -> 必须记录
-                  # 如果上一版里 Indirect=True，说明它是旧版的依赖库 -> 忽略
+                  # 如果旧版里 Indirect=False，说明它是旧版的一个插件，现在被删了 -> 记录
                   if prev[path].get('Indirect', False) is False:
                       is_relevant = True
 
@@ -190,17 +189,18 @@ jobs:
               name = fmt_name(display_path)
               link = f"https://{display_path}"
 
+              # 【关键修复2】使用 .get() 安全获取版本，防止任何潜在的 KeyError
+              v_curr = curr.get(path, {}).get('Version', '')
+              v_prev = prev.get(path, {}).get('Version', '')
+
               if is_removed:
                   msg = f"🗑️ **Removed**: [{name}]({link})"
                   changes_other.append(msg)
               elif path not in prev:
-                  ver = fmt_ver(curr[path]['Version'])
-                  msg = f"✨ **Added**: [{name}]({link}) `{ver}`"
+                  msg = f"✨ **Added**: [{name}]({link}) `{fmt_ver(v_curr)}`"
                   changes_other.append(msg)
-              elif prev[path]['Version'] != curr[path]['Version']:
-                  v_old = fmt_ver(prev[path]['Version'])
-                  v_new = fmt_ver(curr[path]['Version'])
-                  msg = f"⬆️ **Updated**: [{name}]({link}) `{v_old}` -> `{v_new}`"
+              elif v_prev != v_curr:
+                  msg = f"⬆️ **Updated**: [{name}]({link}) `{fmt_ver(v_prev)}` -> `{fmt_ver(v_curr)}`"
                   changes_other.append(msg)
 
           if not changes_other:
