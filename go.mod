@@ -14,6 +14,7 @@ require (
 	github.com/fvbommel/caddy-combine-ip-ranges v0.0.1
 	github.com/greenpau/caddy-security v1.1.31
 	github.com/imgk/caddy-trojan v0.2.10-2
+	github.com/lanrat/caddy-dynamic-remoteip v0.0.0-20231007025615-f72ed4fc7b9c
 	github.com/mholt/caddy-events-exec v0.1.0
 	github.com/mholt/caddy-l4 v0.0.0-20251209130418-1a3490ef786a
 	github.com/mholt/caddy-ratelimit v0.1.0
