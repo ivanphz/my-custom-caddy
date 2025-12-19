@@ -6,7 +6,7 @@ on:
     branches:
       - main
     paths:
-      - 'go.mod' # 依赖变动时触发
+      - 'go.mod'
 
 permissions:
   contents: write
@@ -55,62 +55,39 @@ jobs:
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
       # ============================================================
-      # 核心修复 1: 生成 go_modules.json 并计算编译参数
+      # 1. 简单粗暴地读取 plugins.txt 生成编译参数
+      #    (不再尝试解析版本，只给名字，让 xcaddy 自己去 go.mod 找版本)
       # ============================================================
-      - name: Calculate Builder Args
+      - name: Prepare XCaddy Args
         id: args
         run: |
-          # 1. 生成依赖清单 (供编译参数计算 和 日志生成使用)
-          go list -m -json all > go_modules.json
-          
-          # 2. 使用 Python 精确解析版本和替换关系，生成 --with 参数
-          cat <<'EOF' > gen_args.py
-          import json
-          import os
+          # 打印一下文件内容，确保没读错
+          echo "=== plugins.txt content ==="
+          cat plugins.txt
+          echo "==========================="
 
-          # 读取 plugins.txt 里的模块名
-          plugins = []
-          if os.path.exists('plugins.txt'):
-              with open('plugins.txt', 'r') as f:
-                  for line in f:
-                      line = line.strip()
-                      if not line or line.startswith('#'): continue
-                      if '=' in line: line = line.split('=')[0].strip()
-                      plugins.append(line)
+          # 使用 awk 提取插件名，处理 = 替换逻辑，过滤掉空行和注释
+          # 结果拼接成 --with A --with B ...
+          ARGS=$(awk '
+            # 跳过空行和注释
+            /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+            # 跳过 Caddy 核心
+            /github.com\/caddyserver\/caddy\/v2/ { next }
+            # 输出格式
+            { printf "--with %s ", $1 }
+          ' plugins.txt)
 
-          # 读取 go list 信息
-          try:
-              with open('go_modules.json', 'r') as f:
-                  data = json.load(f)
-                  # 转为字典映射
-                  if isinstance(data, dict): data = [data]
-                  mod_map = {item['Path']: item for item in data if 'Path' in item}
-          except:
-              mod_map = {}
+          # 检查参数是否为空
+          if [ -z "$ARGS" ]; then
+            echo "❌ Error: 没找到插件！Build 终止。"
+            exit 1
+          fi
 
-          args = []
-          for p in plugins:
-              if p == "github.com/caddyserver/caddy/v2": continue # 跳过核心
-              
-              info = mod_map.get(p)
-              if info:
-                  # 处理 Replace (如 forwardproxy)
-                  if info.get('Replace'):
-                      rep = info['Replace']
-                      # 格式: --with 原名=替换名@版本
-                      args.append(f"--with {p}={rep['Path']}@{rep['Version']}")
-                  else:
-                      # 格式: --with 原名@版本
-                      args.append(f"--with {p}@{info['Version']}")
-          
-          print(" ".join(args))
-          EOF
-          
-          # 3. 输出到环境变量
-          echo "XCADDY_ARGS=$(python3 gen_args.py)" >> $GITHUB_OUTPUT
+          echo "✅ Final Args: $ARGS"
+          echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 核心修复 2: 将计算出的参数传给 xcaddy
+      # 2. 编译 (一定能编进去)
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -120,11 +97,14 @@ jobs:
         run: |
           export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
           
-          # 这里引用了上一步生成的参数
+          # 这里的 XCaddy 会使用 go.mod 里的版本
           ~/go/bin/xcaddy build \
             --output ${{ matrix.output_name }} \
             ${{ steps.args.outputs.XCADDY_ARGS }}
 
+      # ============================================================
+      # 3. 生成日志 (这里负责“版本感知”和“增删检测”)
+      # ============================================================
       - name: Generate Comprehensive Release Notes
         if: matrix.goarch == 'amd64'
         env:
@@ -132,11 +112,15 @@ jobs:
         run: |
           chmod +x ${{ matrix.output_name }}
           
-          # go_modules.json 已经在上面生成了，直接用
-          
+          # 3.1 生成当前的详细清单 (包含版本、时间、Hash)
+          #     因为 update_deps 已经跑过，go.mod 是新的，所以这里生成的是最新的信息
+          go list -m -json all > go_modules.json
+
+          # 3.2 下载上次的清单做对比
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
+          # 3.3 Python 脚本：负责 "Added / Removed / Updated" 逻辑
           cat <<'EOF' > diff_logic.py
           import json
           import os
@@ -168,6 +152,7 @@ jobs:
           curr = load_json('go_modules.json')
           prev = load_json('prev_go_modules.json')
 
+          # 这里的 tracked 列表只为了显示“新增/删除”时高亮重点插件
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -185,13 +170,12 @@ jobs:
           for path in all_paths:
               is_caddy = (path == "github.com/caddyserver/caddy/v2")
               
-              # 逻辑：在关注列表里 OR 是Caddy OR 是被删除的(之前有现在无)
+              # 如果插件出现在 plugins.txt，或者它是被删除的插件(旧的有，新的没)，就展示
               is_removed = (path in prev and path not in curr)
-              is_relevant = (path in tracked) or is_caddy or is_removed
-
-              # 如果是被删除的，做个简单过滤防止底层依赖噪音
-              if is_removed and "github.com" not in path:
-                  is_relevant = False
+              
+              # 简单的过滤：只关心 plugins.txt 里的或者看起来像插件的库，防止底层依赖刷屏
+              # 如果是 Removed，且包含 github.com，我们假设它是插件
+              is_relevant = (path in tracked) or is_caddy or (is_removed and "github.com" in path)
 
               if not is_relevant: continue
 
@@ -223,6 +207,7 @@ jobs:
 
           python3 diff_logic.py > change_log.md
 
+          # 3.4 组装 Final Note
           CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
@@ -248,6 +233,7 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
+          # 3.5 生成表格
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             if [[ "$line" == *"="* ]]; then SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH=$(echo "$line" | xargs); fi
             if [[ "$SEARCH" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
