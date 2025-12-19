@@ -77,7 +77,7 @@ jobs:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          GOFLAGS: "-ldflags=-X 'github.com/caddyserver/caddy/v2.Version=v2.10.2+${{ needs.init.outputs.version_tag }}'"
+          XCADDY_GO_BUILD_FLAGS: "-ldflags=-X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
         run: |
           ~/go/bin/xcaddy build \
             --output ${{ matrix.output_name }} \
