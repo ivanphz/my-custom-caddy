@@ -72,21 +72,19 @@ jobs:
             ${{ steps.analyze.outputs.XCADDY_ARGS }}
 
       - name: Generate Comprehensive Release Notes
-        if: matrix.goarch == 'amd64' # 只在 amd64 跑一次，避免重复
+        if: matrix.goarch == 'amd64'
         run: |
-          # 1. 赋予二进制执行权限 (保留原逻辑)
           chmod +x ${{ matrix.output_name }}
           
-          # 2. 准备数据源：让 Go 告诉我们要用的确切版本信息
-          echo "Fetching Go module info..."
+          # 1. 获取 Go 模块信息
           go list -m -json all > go_modules.json
 
-          # 3. 准备变量 (从 needs.init 获取)
+          # 2. 准备变量
           CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
 
-          # 4. 提取 Caddy Core 信息 (带 Hash h1:xxxx...)
+          # 3. 提取 Caddy Core 信息
           CADDY_CORE_INFO=$(jq -r '
             select(.Path == "github.com/caddyserver/caddy/v2") | 
             if .Replace != null then 
@@ -96,7 +94,7 @@ jobs:
             end
           ' go_modules.json)
 
-          # 5. 开始生成 final_note.md (完全重写)
+          # 4. 生成头部信息
           cat <<EOF > final_note.md
           # $CUSTOM_VERSION
 
@@ -111,58 +109,63 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
-          # 6. 循环 plugins.txt，智能解析每个插件
+          # 5. 循环处理插件
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
-            # 处理 name=replace 格式，只取名字
+            # 提取搜索用的模块名
             if [[ "$line" == *"="* ]]; then
-              MODULE_NAME=$(echo "$line" | cut -d'=' -f1 | xargs)
+              SEARCH_KEY=$(echo "$line" | cut -d'=' -f1 | xargs)
             else
-              MODULE_NAME=$(echo "$line" | xargs)
+              SEARCH_KEY=$(echo "$line" | xargs)
             fi
 
-            # 使用 jq 从 go_modules.json 提取真实版本和时间
-            # 逻辑：优先读取 Replace 后的信息（针对 forwardproxy 等被替换的插件）
-            INFO_JSON=$(jq -r --arg name "$MODULE_NAME" '
+            # 【改动1】过滤掉 Caddy Core，避免重复显示
+            if [[ "$SEARCH_KEY" == "github.com/caddyserver/caddy/v2" ]]; then
+              continue
+            fi
+
+            # 提取真实路径、版本和时间
+            # 逻辑：如果有 Replace，取 Replace 后的 .Path，这样能拿到真实的 repo (比如 klzgrad/forwardproxy)
+            INFO_JSON=$(jq -r --arg name "$SEARCH_KEY" '
               select(.Path == $name) | 
               if .Replace != null then 
-                {ver: .Replace.Version, time: .Replace.Time} 
+                {path: .Replace.Path, ver: .Replace.Version, time: .Replace.Time} 
               else 
-                {ver: .Version, time: .Time} 
+                {path: .Path, ver: .Version, time: .Time} 
               end
             ' go_modules.json)
 
-            # 如果没找到信息（比如插件名写错了），跳过
+            # 判空跳过
             if [[ -z "$INFO_JSON" || "$INFO_JSON" == "null" ]]; then
               continue
             fi
 
+            REAL_PATH=$(echo "$INFO_JSON" | jq -r .path)
             RAW_VER=$(echo "$INFO_JSON" | jq -r .ver)
             RAW_TIME=$(echo "$INFO_JSON" | jq -r .time)
 
-            # === 版本显示逻辑 ===
+            # 【改动2 & 3】生成带用户名的显示名称和超链接
+            # 去掉域名(第一段)，保留 用户名/仓库名
+            # 例如 github.com/klzgrad/forwardproxy -> klzgrad/forwardproxy
+            DISPLAY_NAME=$(echo "$REAL_PATH" | cut -d'/' -f2-)
+            LINK="https://$REAL_PATH"
+
+            # 版本显示逻辑 (Tag vs Commit)
             DISPLAY_VER="$RAW_VER"
-            # 正则检测伪版本 (vX.Y.Z-0.yyyymmddhhmmss-abcdef...)
             if [[ "$RAW_VER" =~ .*-.*-.* ]]; then
-                # 截取最后一段 Hash (取前7位)，显示为 Commit: xxxxxxx
                 COMMIT_HASH=$(echo "$RAW_VER" | awk -F- '{print $NF}' | cut -c1-7)
                 DISPLAY_VER="Commit: $COMMIT_HASH"
             fi
 
-            # === 时间显示逻辑 (UTC 转 北京时间) ===
+            # 时间显示逻辑
             if [[ -n "$RAW_TIME" && "$RAW_TIME" != "null" ]]; then
                 DISPLAY_TIME=$(date -d "$RAW_TIME +8 hours" '+%Y-%m-%d %H:%M:%S')
             else
                 DISPLAY_TIME="N/A"
             fi
 
-            SHORT_NAME=$(basename "$MODULE_NAME")
-            echo "| $SHORT_NAME | $DISPLAY_VER | $DISPLAY_TIME |" >> final_note.md
+            # 写入表格: [Name](Link) | Version | Time
+            echo "| [$DISPLAY_NAME]($LINK) | $DISPLAY_VER | $DISPLAY_TIME |" >> final_note.md
           done
-          
-          # 7. (可选) 如果原来的 gen_info.py 生成了变动日志，可以追加在最后
-          # echo "" >> final_note.md
-          # echo "### 📦 Plugin Changes" >> final_note.md
-          # cat release_notes.md >> final_note.md || echo "No plugin updates detected." >> final_note.md
 
       - name: Generate Checksum
         run: sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
