@@ -74,12 +74,12 @@ jobs:
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
-         CGO_ENABLED: 0
-         GOOS: ${{ matrix.goos }}
-         GOARCH: ${{ matrix.goarch }}
-       run: |
-         export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
-         ~/go/bin/xcaddy build --output ${{ matrix.output_name }} ${{ steps.args.outputs.XCADDY_ARGS }}
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
+          ~/go/bin/xcaddy build --output ${{ matrix.output_name }} ${{ steps.args.outputs.XCADDY_ARGS }}
 
       # ============================================================
       # 3. 生成日志 (修复了 JSON 格式问题)
