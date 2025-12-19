@@ -1,24 +1,28 @@
-# === Caddy 核心 (必须保留) ===
+# === Caddy核心 (必须保留) ===
 github.com/caddyserver/caddy/v2
 
-# === 替换类 (原名=替身@版本或分支) ===
+# === GFW ===
 # 追踪 klzgrad 的 naive 分支
 github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive
-
-# === 普通插件 ===
-github.com/greenpau/caddy-security
-github.com/mholt/caddy-l4
-github.com/WeidiDeng/caddy-cloudflare-ip
-github.com/LeenHawk/caddy-edgeone-ip
-github.com/xcaddyplugins/caddy-trusted-cloudfront
-github.com/tuzzmaniandevil/caddy-dynamic-clientip
-github.com/monobilisim/caddy-ip-list
-github.com/fvbommel/caddy-combine-ip-ranges
-github.com/porech/caddy-maxmind-geolocation
-github.com/mholt/caddy-ratelimit
 github.com/imgk/caddy-trojan
-github.com/caddy-dns/tencentcloud
-github.com/okrc/caddy-uploadcert-tencentcloud
-github.com/mholt/caddy-webdav
+github.com/mholt/caddy-l4
+
+# === 其他 ===
 github.com/caddyserver/jsonc-adapter
+github.com/greenpau/caddy-security
 github.com/mholt/caddy-events-exec
+github.com/mholt/caddy-ratelimit
+github.com/mholt/caddy-webdav
+github.com/okrc/caddy-uploadcert-tencentcloud
+github.com/porech/caddy-maxmind-geolocation
+
+github.com/caddy-dns/tencentcloud
+github.com/lanrat/caddy-dynamic-remoteip
+github.com/tuzzmaniandevil/caddy-dynamic-clientip
+
+# === http.ip_sources ===
+github.com/fvbommel/caddy-combine-ip-ranges
+github.com/LeenHawk/caddy-edgeone-ip
+github.com/monobilisim/caddy-ip-list
+github.com/WeidiDeng/caddy-cloudflare-ip
+github.com/xcaddyplugins/caddy-trusted-cloudfront
