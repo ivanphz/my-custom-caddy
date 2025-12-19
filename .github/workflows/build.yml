@@ -70,7 +70,7 @@ jobs:
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 2. 编译（绕过 xcaddy 直接用 go build）
+      # 2. 编译
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -78,16 +78,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # 先用 xcaddy 准备环境（会失败但没关系）
-          ~/go/bin/xcaddy build --output ${{ matrix.output_name }} ${{ steps.args.outputs.XCADDY_ARGS }} || true
-          
-          # 找到 xcaddy 创建的临时目录
-          BUILDDIR=$(find /tmp -name "buildenv_*" -type d | head -n 1)
-          
-          # 进入目录手动编译
-          cd "$BUILDDIR"
-          go build -o ${{ github.workspace }}/${{ matrix.output_name }} \
-            -ldflags="-X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
+          export XCADDY_GO_BUILD_FLAGS="-ldflags=-X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
+          ~/go/bin/xcaddy build \
+            --output ${{ matrix.output_name }} \
+            ${{ steps.args.outputs.XCADDY_ARGS }}
 
       # ============================================================
       # 2.5 测试版本输出（新增，用于调试）
