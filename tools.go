@@ -8,9 +8,6 @@ import (
   _ "github.com/caddyserver/jsonc-adapter"
   _ "github.com/greenpau/caddy-security"
   _ "github.com/mholt/caddy-events-exec"
-  _ "github.com/mholt/caddy-ratelimit"
-  _ "github.com/mholt/caddy-webdav"
-  _ "github.com/okrc/caddy-uploadcert-tencentcloud"
   _ "github.com/porech/caddy-maxmind-geolocation"
   _ "github.com/caddy-dns/tencentcloud"
   _ "github.com/tuzzmaniandevil/caddy-dynamic-clientip"
@@ -19,4 +16,7 @@ import (
   _ "github.com/monobilisim/caddy-ip-list"
   _ "github.com/WeidiDeng/caddy-cloudflare-ip"
   _ "github.com/xcaddyplugins/caddy-trusted-cloudfront"
+  _ "github.com/mholt/caddy-ratelimit"
+  _ "github.com/mholt/caddy-webdav"
+  _ "github.com/okrc/caddy-uploadcert-tencentcloud"
 )
