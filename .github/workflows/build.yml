@@ -71,19 +71,98 @@ jobs:
             --output ${{ matrix.output_name }} \
             ${{ steps.analyze.outputs.XCADDY_ARGS }}
 
-      - name: Assemble Release Note
-        if: matrix.goarch == 'amd64'
+      - name: Generate Comprehensive Release Notes
+        if: matrix.goarch == 'amd64' # 只在 amd64 跑一次，避免重复
         run: |
+          # 1. 赋予二进制执行权限 (保留原逻辑)
           chmod +x ${{ matrix.output_name }}
           
-          echo "## ${{ needs.init.outputs.version_tag }} Latest" > final_note.md
-          echo "" >> final_note.md
-          echo "### 🚀 Build Info" >> final_note.md
-          echo "- **Caddy Core**: \`${{ steps.analyze.outputs.CADDY_VERSION }}\`" >> final_note.md
-          echo "- **Go Version**: \`$(go version | awk '{print $3}')\`" >> final_note.md
-          echo "- **Build Time**: ${{ needs.init.outputs.build_time }}" >> final_note.md
-          echo "" >> final_note.md
-          cat release_notes.md >> final_note.md
+          # 2. 准备数据源：让 Go 告诉我们要用的确切版本信息
+          echo "Fetching Go module info..."
+          go list -m -json all > go_modules.json
+
+          # 3. 准备变量 (从 needs.init 获取)
+          CUSTOM_VERSION="${{ needs.init.outputs.version_tag }}"
+          BUILD_TIME="${{ needs.init.outputs.build_time }}"
+          GO_VERSION=$(go version | awk '{print $3}')
+
+          # 4. 提取 Caddy Core 信息 (带 Hash h1:xxxx...)
+          CADDY_CORE_INFO=$(jq -r '
+            select(.Path == "github.com/caddyserver/caddy/v2") | 
+            if .Replace != null then 
+              "\(.Replace.Version) (\(.Replace.Sum))"
+            else 
+              "\(.Version) (\(.Sum))"
+            end
+          ' go_modules.json)
+
+          # 5. 开始生成 final_note.md (完全重写)
+          cat <<EOF > final_note.md
+          # $CUSTOM_VERSION
+
+          ### 🚀 Build Info
+          - **Custom Version**: $CUSTOM_VERSION
+          - **Caddy Core**: \`$CADDY_CORE_INFO\`
+          - **Go Version**: \`$GO_VERSION\`
+          - **Build Time**: $BUILD_TIME
+
+          ### 🔌 Installed Plugins Status
+          | Plugin | Version | Time (Beijing) |
+          | :--- | :--- | :--- |
+          EOF
+
+          # 6. 循环 plugins.txt，智能解析每个插件
+          grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
+            # 处理 name=replace 格式，只取名字
+            if [[ "$line" == *"="* ]]; then
+              MODULE_NAME=$(echo "$line" | cut -d'=' -f1 | xargs)
+            else
+              MODULE_NAME=$(echo "$line" | xargs)
+            fi
+
+            # 使用 jq 从 go_modules.json 提取真实版本和时间
+            # 逻辑：优先读取 Replace 后的信息（针对 forwardproxy 等被替换的插件）
+            INFO_JSON=$(jq -r --arg name "$MODULE_NAME" '
+              select(.Path == $name) | 
+              if .Replace != null then 
+                {ver: .Replace.Version, time: .Replace.Time} 
+              else 
+                {ver: .Version, time: .Time} 
+              end
+            ' go_modules.json)
+
+            # 如果没找到信息（比如插件名写错了），跳过
+            if [[ -z "$INFO_JSON" || "$INFO_JSON" == "null" ]]; then
+              continue
+            fi
+
+            RAW_VER=$(echo "$INFO_JSON" | jq -r .ver)
+            RAW_TIME=$(echo "$INFO_JSON" | jq -r .time)
+
+            # === 版本显示逻辑 ===
+            DISPLAY_VER="$RAW_VER"
+            # 正则检测伪版本 (vX.Y.Z-0.yyyymmddhhmmss-abcdef...)
+            if [[ "$RAW_VER" =~ .*-.*-.* ]]; then
+                # 截取最后一段 Hash (取前7位)，显示为 Commit: xxxxxxx
+                COMMIT_HASH=$(echo "$RAW_VER" | awk -F- '{print $NF}' | cut -c1-7)
+                DISPLAY_VER="Commit: $COMMIT_HASH"
+            fi
+
+            # === 时间显示逻辑 (UTC 转 北京时间) ===
+            if [[ -n "$RAW_TIME" && "$RAW_TIME" != "null" ]]; then
+                DISPLAY_TIME=$(date -d "$RAW_TIME +8 hours" '+%Y-%m-%d %H:%M:%S')
+            else
+                DISPLAY_TIME="N/A"
+            fi
+
+            SHORT_NAME=$(basename "$MODULE_NAME")
+            echo "| $SHORT_NAME | $DISPLAY_VER | $DISPLAY_TIME |" >> final_note.md
+          done
+          
+          # 7. (可选) 如果原来的 gen_info.py 生成了变动日志，可以追加在最后
+          # echo "" >> final_note.md
+          # echo "### 📦 Plugin Changes" >> final_note.md
+          # cat release_notes.md >> final_note.md || echo "No plugin updates detected." >> final_note.md
 
       - name: Generate Checksum
         run: sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
