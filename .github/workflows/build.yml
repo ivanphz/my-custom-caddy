@@ -77,12 +77,11 @@ jobs:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOFLAGS: "-ldflags=-X 'github.com/caddyserver/caddy/v2.Version=v2.10.2+${{ needs.init.outputs.version_tag }}'"
         run: |
-          CUSTOM_VER="${{ needs.init.outputs.version_tag }}"
           ~/go/bin/xcaddy build \
             --output ${{ matrix.output_name }} \
-            ${{ steps.args.outputs.XCADDY_ARGS }} \
-            -- "-ldflags=-X github.com/caddyserver/caddy/v2.CustomVersion=${CUSTOM_VER}"
+            ${{ steps.args.outputs.XCADDY_ARGS }}
 
       # ============================================================
       # 2.5 测试版本输出（新增，用于调试）
