@@ -75,10 +75,9 @@ jobs:
       - name: Build Caddy (${{ matrix.goarch }})
         env:
           CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          # 注意引号的转义，确保 -ldflags 作为一个整体传递
+          GOFLAGS: '-ldflags="-X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"'
         run: |
-          export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
           ~/go/bin/xcaddy build --output ${{ matrix.output_name }} ${{ steps.args.outputs.XCADDY_ARGS }}
 
       # ============================================================
