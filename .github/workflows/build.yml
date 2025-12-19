@@ -70,7 +70,7 @@ jobs:
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 2. 编译（修改了这里，去掉 GOFLAGS，改用 xcaddy 的 -ldflags）
+      # 2. 编译（使用 -- 分隔符传递 Go 编译参数）
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -78,10 +78,11 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          CUSTOM_VER="${{ needs.init.outputs.version_tag }}"
           ~/go/bin/xcaddy build \
-            -ldflags "-X 'github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}'" \
             --output ${{ matrix.output_name }} \
-            ${{ steps.args.outputs.XCADDY_ARGS }}
+            ${{ steps.args.outputs.XCADDY_ARGS }} \
+            -- -ldflags "-X github.com/caddyserver/caddy/v2.CustomVersion=${CUSTOM_VER}"
 
       # ============================================================
       # 2.5 测试版本输出（新增，用于调试）
