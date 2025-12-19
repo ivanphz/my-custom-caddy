@@ -2,11 +2,11 @@ name: Update Dependencies
 
 on:
   schedule:
-    - cron: '0 10 * * 5' # 每周五 18:00 (Beijing Time)
-  workflow_dispatch:      # 手动强制运行
+    - cron: '0 10 * * 5'
+  workflow_dispatch:
   push:
     paths:
-      - 'plugins.txt'     # 修改列表自动触发
+      - 'plugins.txt'
 
 jobs:
   update:
@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT }} # <--- 【关键修改】使用 PAT 才能触发后续 Build
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -24,76 +26,42 @@ jobs:
 
       - name: Initialize & Update
         run: |
-          # 1. 确保 go.mod 存在
           if [ ! -f go.mod ]; then
             go mod init github.com/${{ github.repository }}
           fi
-
-          # 2. 清理旧的 replace 规则
           go mod edit -dropreplace=all || true
 
-          # === 创建 tools.go 头部 ===
           echo '//go:build tools' > tools.go
           echo 'package main' >> tools.go
           echo 'import (' >> tools.go
-          # 注意：这里我们不再手动加 caddy/v2 了，完全交给 plugins.txt 循环处理，防止重复
-          # 如果你的 plugins.txt 里没有 caddy/v2，请手动把下一行注释取消：
-          # echo '  _ "github.com/caddyserver/caddy/v2"' >> tools.go 
 
-          # 3. 解析 plugins.txt
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             echo "Processing: $line"
-            
-            # 这里的 target_import 就是写入 tools.go 的包名
             target_import=""
-
             if [[ "$line" == *"="* ]]; then
-              # === 处理替换逻辑 (NaiveProxy) ===
-              # 格式: github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive
               ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
               REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
-              
-              # 1. 在 go.mod 中建立“偷梁换柱”的映射
               go mod edit -replace $ORIGINAL=$REPLACEMENT
-              
-              # 2. 拉取代码 (Go 会自动顺着 replace 找到 klzgrad)
               go get $ORIGINAL
-              
               target_import="$ORIGINAL"
             else
-              # === 普通插件 ===
               go get $line@latest
               target_import="$line"
             fi
-
-            # === 写入 tools.go (防止重复写入) ===
-            # 只有当 tools.go 里还没有这个包的时候才写入
             if ! grep -q "\"$target_import\"" tools.go; then
                echo "  _ \"$target_import\"" >> tools.go
             fi
           done
-
-          # 结束 tools.go
           echo ')' >> tools.go
-
-          # 4. 整理依赖
+          
           go mod tidy
-
-          # === 验证环节 ===
-          echo "---------------------------------------------------"
-          echo "检查 go.mod 中的替换规则 (验证 klzgrad 是否生效):"
-          grep "replace" go.mod || echo "⚠️ 警告: 未找到 replace 规则！"
-          echo "---------------------------------------------------"
 
       - name: Check for Changes
         id: git-check
         run: |
-          # 检查文件变动 (加入 tools.go)
           if git diff --quiet go.mod go.sum tools.go; then
-            echo "No changes detected."
             echo "changed=false" >> $GITHUB_OUTPUT
           else
-            echo "Changes detected!"
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
@@ -102,7 +70,6 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          # 必须把 tools.go 也提交上去，否则下次还会出问题
           git add go.mod go.sum tools.go
           git commit -m "chore: update dependencies from plugins.txt"
           git push
