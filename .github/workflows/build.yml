@@ -91,14 +91,14 @@ jobs:
         run: |
           chmod +x ${{ matrix.output_name }}
           
-          # 1. 核心修复：将 Stream 转换为标准 JSON 数组
+          # 1. 生成当前 JSON
           go list -m -json all | jq -s '.' > go_modules.json
 
           # 2. 下载对比文件
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # 3. Python 对比脚本 (已优化：屏蔽Core + 显示真实名称)
+          # 3. Python 对比脚本 (逻辑修正：使用 Indirect 属性判定是否为插件)
           cat <<'EOF' > diff_logic.py
           import json
           import os
@@ -119,8 +119,13 @@ jobs:
                       for item in data:
                           path = item.get('Path')
                           if not path: continue
+                          # 如果有 Replace，优先读取 Replace 的信息
+                          # 但为了判断 Removed，我们需要保留原始 Item 的 Indirect 状态
                           if item.get('Replace'):
+                              # 将 Replace 的 Path/Version 覆盖进去，但保留原始 Indirect
+                              orig_indirect = item.get('Indirect', False)
                               res[path] = item['Replace']
+                              res[path]['Indirect'] = orig_indirect # 关键：继承 Indirect 属性
                           else:
                               res[path] = item
                       return res
@@ -134,6 +139,7 @@ jobs:
               print("⚠️ Error: Failed to parse current module list.")
               sys.exit(0)
 
+          # 读取当前 plugins.txt 以确保 Added/Updated 必须显示
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -144,22 +150,37 @@ jobs:
                       tracked.add(line)
 
           changes_other = []
-
           all_paths = set(curr.keys()) | set(prev.keys())
           
           for path in all_paths:
-              # 【修复点1】彻底忽略 Caddy Core，因为它在 Build Info 里展示
+              # 1. 彻底忽略 Caddy Core
               if path == "github.com/caddyserver/caddy/v2": continue
 
               is_removed = (path in prev and path not in curr)
-              # 只有在 plugins.txt 里的，或者看起来像插件的才显示
-              is_relevant = (path in tracked) or (is_removed and "github.com" in path)
+              
+              # 2. 核心判定逻辑 (使用 Indirect 属性)
+              is_relevant = False
+
+              if path in curr:
+                  # 如果在当前列表中，且在 plugins.txt 里，或者 Indirect=False (直接依赖)，则显示
+                  # 主要处理 Added 和 Updated
+                  if path in tracked:
+                      is_relevant = True
+                  # 补充：即使不在 plugins.txt (比如手动写在 go.mod)，只要是直接依赖也可能是插件
+                  elif curr[path].get('Indirect', False) is False: 
+                      is_relevant = True
+
+              elif is_removed:
+                  # 【关键修正】
+                  # 如果是被删除的，检查它在“上一版”中是不是直接依赖。
+                  # 如果上一版里 Indirect=False，说明它是旧版的一个插件，现在被删了 -> 必须记录
+                  # 如果上一版里 Indirect=True，说明它是旧版的依赖库 -> 忽略
+                  if prev[path].get('Indirect', False) is False:
+                      is_relevant = True
 
               if not is_relevant: continue
 
-              # 【修复点2】获取真实路径用于显示 (处理 replace)
-              # 如果在 curr 里，用 curr 的 Path (可能是替换后的)
-              # 如果是删除的，尝试用 prev 的 Path
+              # 3. 组装显示信息
               display_path = path
               if path in curr:
                   display_path = curr[path].get('Path', path)
@@ -169,12 +190,12 @@ jobs:
               name = fmt_name(display_path)
               link = f"https://{display_path}"
 
-              if path not in prev:
+              if is_removed:
+                  msg = f"🗑️ **Removed**: [{name}]({link})"
+                  changes_other.append(msg)
+              elif path not in prev:
                   ver = fmt_ver(curr[path]['Version'])
                   msg = f"✨ **Added**: [{name}]({link}) `{ver}`"
-                  changes_other.append(msg)
-              elif path not in curr:
-                  msg = f"🗑️ **Removed**: [{name}]({link})"
                   changes_other.append(msg)
               elif prev[path]['Version'] != curr[path]['Version']:
                   v_old = fmt_ver(prev[path]['Version'])
@@ -237,7 +258,7 @@ jobs:
             
             echo "| [$NAME_DISP](https://$PATH_R) | $VER_DISP | $TIME_DISP |" >> final_note.md
           done
-
+          
       - name: Generate Checksum
         run: sha256sum ${{ matrix.output_name }} > ${{ matrix.output_name }}.sha256
 
