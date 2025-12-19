@@ -76,7 +76,7 @@ jobs:
         run: |
           chmod +x ${{ matrix.output_name }}
           
-          # 1. 获取 Go 模块信息
+          # 1. 获取数据源
           go list -m -json all > go_modules.json
 
           # 2. 准备变量
@@ -94,7 +94,7 @@ jobs:
             end
           ' go_modules.json)
 
-          # 4. 生成头部信息
+          # 4. 生成头部 (Build Info)
           cat <<EOF > final_note.md
           # $CUSTOM_VERSION
 
@@ -104,27 +104,75 @@ jobs:
           - **Go Version**: \`$GO_VERSION\`
           - **Build Time**: $BUILD_TIME
 
+          EOF
+
+          # ========================================================
+          # 5. 处理变动日志 (Caddy置顶 + 剩余首字母排序)
+          # ========================================================
+          echo "### 📦 Plugin Changes" >> final_note.md
+          echo "" >> final_note.md
+
+          # 检查 release_notes.md 是否存在且非空
+          if [ -s release_notes.md ]; then
+            # 临时文件
+            touch _caddy_changes.txt _other_changes.txt
+
+            # 逐行读取，区分 Caddy 和 其他插件
+            while IFS= read -r line; do
+              # 忽略空行
+              if [[ -z "$line" ]]; then continue; fi
+              
+              # 判断是否包含 Caddy (不区分大小写)
+              if echo "$line" | grep -qi "caddy"; then
+                echo "$line" >> _caddy_changes.txt
+              else
+                echo "$line" >> _other_changes.txt
+              fi
+            done < release_notes.md
+
+            # 1. 先写入 Caddy 变动
+            if [ -s _caddy_changes.txt ]; then
+              cat _caddy_changes.txt >> final_note.md
+            fi
+
+            # 2. 再写入其他变动 (sort 进行首字母排序)
+            if [ -s _other_changes.txt ]; then
+              sort _other_changes.txt >> final_note.md
+            fi
+            
+            # 如果两个都为空(例如全是空行)，补一句无变动
+            if [ ! -s _caddy_changes.txt ] && [ ! -s _other_changes.txt ]; then
+               echo "No plugin updates detected in this build." >> final_note.md
+            fi
+            
+            # 清理临时文件
+            rm -f _caddy_changes.txt _other_changes.txt
+          else
+            echo "No plugin updates detected in this build." >> final_note.md
+          fi
+          echo "" >> final_note.md
+
+          # ========================================================
+          # 6. 生成插件列表 (按照 plugins.txt 顺序)
+          # ========================================================
+          cat <<EOF >> final_note.md
           ### 🔌 Installed Plugins Status
           | Plugin | Version | Time (Beijing) |
           | :--- | :--- | :--- |
           EOF
 
-          # 5. 循环处理插件
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
-            # 提取搜索用的模块名
             if [[ "$line" == *"="* ]]; then
               SEARCH_KEY=$(echo "$line" | cut -d'=' -f1 | xargs)
             else
               SEARCH_KEY=$(echo "$line" | xargs)
             fi
 
-            # 【改动1】过滤掉 Caddy Core，避免重复显示
+            # 过滤 Caddy Core
             if [[ "$SEARCH_KEY" == "github.com/caddyserver/caddy/v2" ]]; then
               continue
             fi
 
-            # 提取真实路径、版本和时间
-            # 逻辑：如果有 Replace，取 Replace 后的 .Path，这样能拿到真实的 repo (比如 klzgrad/forwardproxy)
             INFO_JSON=$(jq -r --arg name "$SEARCH_KEY" '
               select(.Path == $name) | 
               if .Replace != null then 
@@ -134,7 +182,6 @@ jobs:
               end
             ' go_modules.json)
 
-            # 判空跳过
             if [[ -z "$INFO_JSON" || "$INFO_JSON" == "null" ]]; then
               continue
             fi
@@ -143,27 +190,24 @@ jobs:
             RAW_VER=$(echo "$INFO_JSON" | jq -r .ver)
             RAW_TIME=$(echo "$INFO_JSON" | jq -r .time)
 
-            # 【改动2 & 3】生成带用户名的显示名称和超链接
-            # 去掉域名(第一段)，保留 用户名/仓库名
-            # 例如 github.com/klzgrad/forwardproxy -> klzgrad/forwardproxy
+            # 显示名称: 去掉域名，保留 用户/仓库 (如 klzgrad/forwardproxy)
             DISPLAY_NAME=$(echo "$REAL_PATH" | cut -d'/' -f2-)
             LINK="https://$REAL_PATH"
 
-            # 版本显示逻辑 (Tag vs Commit)
+            # 版本逻辑
             DISPLAY_VER="$RAW_VER"
             if [[ "$RAW_VER" =~ .*-.*-.* ]]; then
                 COMMIT_HASH=$(echo "$RAW_VER" | awk -F- '{print $NF}' | cut -c1-7)
                 DISPLAY_VER="Commit: $COMMIT_HASH"
             fi
 
-            # 时间显示逻辑
+            # 时间逻辑
             if [[ -n "$RAW_TIME" && "$RAW_TIME" != "null" ]]; then
                 DISPLAY_TIME=$(date -d "$RAW_TIME +8 hours" '+%Y-%m-%d %H:%M:%S')
             else
                 DISPLAY_TIME="N/A"
             fi
 
-            # 写入表格: [Name](Link) | Version | Time
             echo "| [$DISPLAY_NAME]($LINK) | $DISPLAY_VER | $DISPLAY_TIME |" >> final_note.md
           done
 
