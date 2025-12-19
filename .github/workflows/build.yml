@@ -66,11 +66,11 @@ jobs:
             { printf "--with %s ", $1 }
           ' plugins.txt)
 
-          # 已移除“无插件报错退出”的逻辑
+          # 已移除"无插件报错退出"的逻辑
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 2. 编译
+      # 2. 编译（修改了这里，去掉 GOFLAGS，改用 xcaddy 的 -ldflags）
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -78,8 +78,25 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          export GOFLAGS="-ldflags=-X=github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}"
-          ~/go/bin/xcaddy build --output ${{ matrix.output_name }} ${{ steps.args.outputs.XCADDY_ARGS }}
+          ~/go/bin/xcaddy build \
+            -ldflags "-X 'github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}'" \
+            --output ${{ matrix.output_name }} \
+            ${{ steps.args.outputs.XCADDY_ARGS }}
+
+      # ============================================================
+      # 2.5 测试版本输出（新增，用于调试）
+      # ============================================================
+      - name: Test Version Output
+        run: |
+          chmod +x ./${{ matrix.output_name }}
+          echo "=== caddy version ==="
+          ./${{ matrix.output_name }} version || true
+          echo ""
+          echo "=== caddy --version ==="
+          ./${{ matrix.output_name }} --version || true
+          echo ""
+          echo "=== caddy list-modules (first 5) ==="
+          ./${{ matrix.output_name }} list-modules --versions | head -n 5 || true
 
       # ============================================================
       # 3. 生成日志 (修复了 JSON 格式问题)
