@@ -2,8 +2,6 @@ module github.com/ivanphz/my-custom-caddy
 
 go 1.25.4
 
-replace github.com/caddyserver/forwardproxy => github.com/klzgrad/forwardproxy v0.0.0-20250118002110-d62c80d3dd2c
-
 require (
 	github.com/LeenHawk/caddy-edgeone-ip v0.1.1
 	github.com/WeidiDeng/caddy-cloudflare-ip v0.0.0-20231130002422-f53b62aa13cb
@@ -178,3 +176,5 @@ require (
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 	howett.net/plist v1.0.1 // indirect
 )
+
+replace github.com/caddyserver/forwardproxy => github.com/klzgrad/forwardproxy v0.0.0-20250118002110-d62c80d3dd2c
