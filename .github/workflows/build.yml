@@ -51,26 +51,8 @@ jobs:
           go-version: 'stable'
           check-latest: true
 
-      - name: Install xcaddy
-        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-
       # ============================================================
-      # 1. 简单粗暴地读取 plugins.txt 生成编译参数
-      # ============================================================
-      - name: Prepare XCaddy Args
-        id: args
-        run: |
-          ARGS=$(awk '
-            /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
-            /github.com\/caddyserver\/caddy\/v2/ { next }
-            { printf "--with %s ", $1 }
-          ' plugins.txt)
-
-          # 已移除"无插件报错退出"的逻辑
-          echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
-
-      # ============================================================
-      # 2. 修正后的构建流程（复用根目录 go.mod）
+      # 1. 生成 main.go 并编译
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -78,7 +60,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # 1. 生成 main.go 到根目录 (直接覆盖或新建)
+          # 1. 生成 main.go
           cat > main.go << 'MAINEOF'
           package main
           
@@ -89,11 +71,14 @@ jobs:
           
           # 从 plugins.txt 读取并添加 import
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
+            [ -z "$line" ] && continue
+            
             if [[ "$line" == *"="* ]]; then
               PKG=$(echo "$line" | cut -d'=' -f1 | xargs)
             else
               PKG=$(echo "$line" | xargs)
             fi
+            
             if [[ "$PKG" != "github.com/caddyserver/caddy/v2" ]]; then
               echo "    _ \"$PKG\"" >> main.go
             fi
@@ -107,9 +92,10 @@ jobs:
           }
           MAINEOF
           
-          # 2. 关键：确保依赖同步
-          # 这里的 go mod tidy 会利用现有的 go.mod/go.sum，确保版本一致
-          # 如果 main.go 引入了 tools.go 没包含的东西，它会下载，但大部分应该已锁定
+          echo "Generated main.go:"
+          cat main.go
+          
+          # 2. 确保依赖同步
           go mod tidy
           
           # 3. 编译
@@ -117,32 +103,37 @@ jobs:
             -ldflags="-w -s -X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}" \
             -trimpath \
             -tags nobadger,nomysql,nopgx
+          
+          echo "Build successful: ${{ matrix.output_name }}"
+          ls -lh "${{ matrix.output_name }}"
 
       # ============================================================
-      # 2.5 测试版本输出（新增，用于调试）
+      # 2. 测试版本输出
       # ============================================================
       - name: Test Version Output
         run: |
           chmod +x ./${{ matrix.output_name }}
+          
           echo "=== caddy version ==="
-          ./${{ matrix.output_name }} version || true
+          if ./${{ matrix.output_name }} version 2>&1; then
+            echo "✓ Version command succeeded"
+          else
+            echo "✗ Version command failed"
+            exit 1
+          fi
+          
           echo ""
-          echo "=== caddy --version ==="
-          ./${{ matrix.output_name }} --version || true
-          echo ""
-          echo "=== caddy list-modules (first 5) ==="
-          ./${{ matrix.output_name }} list-modules --versions | head -n 5 || true
+          echo "=== caddy list-modules (first 10) ==="
+          ./${{ matrix.output_name }} list-modules --versions | head -n 10
 
       # ============================================================
-      # 3. 生成日志 (修复了 JSON 格式问题)
+      # 3. 生成 Release Notes (仅 amd64)
       # ============================================================
       - name: Generate Comprehensive Release Notes
         if: matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          chmod +x ${{ matrix.output_name }}
-          
           # 1. 生成当前 JSON
           go list -m -json all | jq -s '.' > go_modules.json
 
@@ -150,7 +141,7 @@ jobs:
           echo "Downloading previous build info..."
           gh release download --pattern "go_modules.json" --output prev_go_modules.json || echo "[]" > prev_go_modules.json
 
-          # 3. Python 对比脚本 (已修复 KeyError 崩溃问题)
+          # 3. Python 对比脚本
           cat <<'EOF' > diff_logic.py
           import json
           import os
@@ -158,7 +149,6 @@ jobs:
 
           def fmt_ver(v):
               if not v: return "N/A"
-              # 截取 Commit Hash (v0.0.0-...-abcdef123456)
               if '-' in v and len(v.split('-')[-1]) >= 12: 
                   return f"Commit: {v.split('-')[-1][:7]}"
               return v
@@ -172,21 +162,19 @@ jobs:
                       data = json.load(f)
                       res = {}
                       for item in data:
-                          if item.get('Main'): continue # 忽略主模块
+                          if item.get('Main'): continue
                           path = item.get('Path')
                           if not path: continue
                           
-                          # 优先读取 Replace，但保留 Indirect 信息
                           if item.get('Replace'):
-                              # 浅拷贝 Replace 信息
                               repl = item['Replace'].copy()
-                              # 强制保留原始的 Indirect 状态，因为 Replace 结构里通常没有 Indirect 字段
                               repl['Indirect'] = item.get('Indirect', False)
                               res[path] = repl
                           else:
                               res[path] = item
                       return res
               except Exception as e:
+                  print(f"Error loading {fn}: {e}", file=sys.stderr)
                   return {}
 
           curr = load_json('go_modules.json')
@@ -196,7 +184,6 @@ jobs:
               print("⚠️ Error: Failed to parse current module list.")
               sys.exit(0)
 
-          # 读取 plugins.txt 里的必选名单
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -212,17 +199,9 @@ jobs:
           for path in all_paths:
               if path == "github.com/caddyserver/caddy/v2": continue
 
-              # === 核心逻辑优化 ===
-              
-              # 1. 存在性判断
               in_curr = path in curr
               in_prev = path in prev
               
-              # 2. 决定是否显示该条目 (Is Relevant?)
-              # 显示条件：
-              # A. 它在 plugins.txt 监控列表中 (最重要)
-              # B. 或者它在当前版本是直接依赖 (Indirect=False)
-              # C. 或者它在旧版本是直接依赖 (防止被删除了看不到)
               is_relevant = False
               if path in tracked:
                   is_relevant = True
@@ -233,8 +212,6 @@ jobs:
               
               if not is_relevant: continue
 
-              # 3. 准备显示数据
-              # 获取对象，优先取存在的，如果两边都有，取 curr 用于显示 Path 名称
               obj = curr[path] if in_curr else prev[path]
               display_path = obj.get('Path', path)
               name = fmt_name(display_path)
@@ -243,21 +220,14 @@ jobs:
               v_curr = curr.get(path, {}).get('Version', '')
               v_prev = prev.get(path, {}).get('Version', '')
 
-              # 4. 生成变更消息 (修复了误报 Added/Removed 的问题)
               if in_curr and in_prev:
-                  # 两边都有：只能是 Updated 或 无变化
                   if v_curr != v_prev:
                       msg = f"⬆️ **Updated**: [{name}]({link}) `{fmt_ver(v_prev)}` -> `{fmt_ver(v_curr)}`"
                       changes_other.append(msg)
-                  # 如果版本一样，什么都不做
-              
               elif in_curr and not in_prev:
-                  # 只有当前有：Added
                   msg = f"✨ **Added**: [{name}]({link}) `{fmt_ver(v_curr)}`"
                   changes_other.append(msg)
-              
               elif not in_curr and in_prev:
-                  # 只有旧版有：Removed
                   msg = f"🗑️ **Removed**: [{name}]({link})"
                   changes_other.append(msg)
 
@@ -274,6 +244,7 @@ jobs:
           BUILD_TIME="${{ needs.init.outputs.build_time }}"
           GO_VERSION=$(go version | awk '{print $3}')
           CADDY_INFO=$(jq -r '.[] | select(.Path == "github.com/caddyserver/caddy/v2") | "\(.Version) (\(.Sum))"' go_modules.json)
+          PLUGIN_COUNT=$(grep -vE '^\s*#|^\s*$|github.com/caddyserver/caddy/v2' plugins.txt | wc -l | xargs)
 
           cat <<EOF > final_note.md
           # $CUSTOM_VERSION
@@ -282,6 +253,7 @@ jobs:
           - **Custom Version**: $CUSTOM_VERSION
           - **Caddy Core**: \`$CADDY_INFO\`
           - **Go Version**: \`$GO_VERSION\`
+          - **Plugins Count**: $PLUGIN_COUNT
           - **Build Time**: $BUILD_TIME
 
           ### 📦 Plugin Changes
@@ -295,9 +267,13 @@ jobs:
           | :--- | :--- | :--- |
           EOF
 
-          # 5. 生成表格
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
-            if [[ "$line" == *"="* ]]; then SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs); else SEARCH=$(echo "$line" | xargs); fi
+            if [[ "$line" == *"="* ]]; then 
+              SEARCH=$(echo "$line" | cut -d'=' -f1 | xargs)
+            else 
+              SEARCH=$(echo "$line" | xargs)
+            fi
+            
             if [[ "$SEARCH" == "github.com/caddyserver/caddy/v2" ]]; then continue; fi
 
             INFO=$(jq -r --arg n "$SEARCH" '.[] | select(.Path == $n) | if .Replace!=null then {p:.Replace.Path, v:.Replace.Version, t:.Replace.Time} else {p:.Path, v:.Version, t:.Time} end' go_modules.json)
@@ -309,10 +285,14 @@ jobs:
             
             NAME_DISP=$(echo "$PATH_R" | cut -d'/' -f2-)
             VER_DISP="$VER_R"
-            if [[ "$VER_R" =~ .*-.*-.* ]]; then VER_DISP="Commit: $(echo $VER_R | awk -F- '{print $NF}' | cut -c1-7)"; fi
+            if [[ "$VER_R" =~ .*-.*-.* ]]; then 
+              VER_DISP="Commit: $(echo $VER_R | awk -F- '{print $NF}' | cut -c1-7)"
+            fi
             
             TIME_DISP="N/A"
-            if [[ -n "$TIME_R" && "$TIME_R" != "null" ]]; then TIME_DISP=$(date -d "$TIME_R +8 hours" '+%Y-%m-%d %H:%M:%S'); fi
+            if [[ -n "$TIME_R" && "$TIME_R" != "null" ]]; then 
+              TIME_DISP=$(date -d "$TIME_R +8 hours" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "N/A")
+            fi
             
             echo "| [$NAME_DISP](https://$PATH_R) | $VER_DISP | $TIME_DISP |" >> final_note.md
           done
@@ -329,6 +309,7 @@ jobs:
             ${{ matrix.output_name }}.sha256
             final_note.md
             go_modules.json
+            main.go
 
   release:
     needs: [init, build]
@@ -358,6 +339,7 @@ jobs:
           files: |
             artifacts/caddy-amd64/caddy-linux-amd64
             artifacts/caddy-amd64/caddy-linux-amd64.sha256
+            artifacts/caddy-amd64/main.go
             artifacts/caddy-arm64/caddy-linux-arm64
             artifacts/caddy-arm64/caddy-linux-arm64.sha256
             artifacts/caddy-amd64/go_modules.json
