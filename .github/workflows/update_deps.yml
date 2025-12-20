@@ -26,44 +26,54 @@ jobs:
 
       - name: Initialize & Update
         run: |
+          # 1. 初始化 go.mod (如果不存在)
           if [ ! -f go.mod ]; then
             go mod init github.com/${{ github.repository }}
           fi
+          
+          # 2. 清理旧的 replace 防止冲突
           go mod edit -dropreplace=all || true
 
+          # 3. 开始重新生成 tools.go
           echo '//go:build tools' > tools.go
           echo 'package main' >> tools.go
           echo 'import (' >> tools.go
 
-          grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
-            echo "Processing: $line"
-            target_import=""
-            
-            if [[ "$line" == *"="* ]]; then
-              # === 优化开始 ===
-              # 1. 解析原始包和替换包
-              ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
-              REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
+          # 4. 循环处理 plugins.txt
+          if [ -f plugins.txt ]; then
+            grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
+              echo "Processing: $line"
+              target_import=""
               
-              # 2. 关键优化：先设置 replace，告诉 Go 这个包被替换了
-              go mod edit -replace "$ORIGINAL=$REPLACEMENT"
-              
-              # 3. 然后再 get，此时 Go 会自动去拉取 REPLACEMENT 的代码，
-              # 而不是尝试去拉取 ORIGINAL (这避免了 ORIGINAL 不存在或结构不对应的报错)
-              go get "$ORIGINAL"
-              
-              target_import="$ORIGINAL"
-              # === 优化结束 ===
-            else
-              go get "$line@latest"
-              target_import="$line"
-            fi
+              if [[ "$line" == *"="* ]]; then
+                # === 优化后的逻辑 ===
+                ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
+                REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
+                
+                # 先 replace，再 get
+                go mod edit -replace "$ORIGINAL=$REPLACEMENT"
+                go get "$ORIGINAL"
+                
+                target_import="$ORIGINAL"
+              else
+                go get "$line@latest"
+                target_import="$line"
+              fi
 
-            # 将 import 写入 tools.go 防止被 tidy 清除
-            if ! grep -q "\"$target_import\"" tools.go; then
-               echo "  _ \"$target_import\"" >> tools.go
-            fi
-          done
+              # 写入 tools.go
+              if ! grep -q "\"$target_import\"" tools.go; then
+                 echo "  _ \"$target_import\"" >> tools.go
+              fi
+            done
+          fi
+
+          # 5. 【关键修复】闭合 import 括号
+          echo ')' >> tools.go
+          
+          # 6. 【关键修复】执行 tidy
+          # 这一步非常重要！它会根据 tools.go 移除掉你刚刚在 plugins.txt 里删掉的插件
+          # 并下载/校验所有依赖的 hash 到 go.sum
+          go mod tidy
 
       - name: Check for Changes
         id: git-check
