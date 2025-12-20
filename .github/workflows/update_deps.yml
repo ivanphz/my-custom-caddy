@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.PAT }} # <--- 【关键修改】使用 PAT 才能触发后续 Build
+          token: ${{ secrets.PAT }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -26,54 +26,96 @@ jobs:
 
       - name: Initialize & Update
         run: |
-          # 1. 初始化 go.mod (如果不存在)
+          # 1. 初始化 go.mod
           if [ ! -f go.mod ]; then
             go mod init github.com/${{ github.repository }}
           fi
           
-          # 2. 清理旧的 replace 防止冲突
-          go mod edit -dropreplace=all || true
-
-          # 3. 开始重新生成 tools.go
+          # 2. 清理旧的 replace
+          if [ -f go.mod ]; then
+            go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all 2>/dev/null | while read -r pkg; do
+              if [ -n "$pkg" ]; then
+                echo "Removing old replace: $pkg"
+                go mod edit -dropreplace="$pkg"
+              fi
+            done
+          fi
+          
+          # 3. 生成 tools.go
           echo '//go:build tools' > tools.go
           echo 'package main' >> tools.go
           echo 'import (' >> tools.go
-
-          # 4. 循环处理 plugins.txt
+          
+          declare -A seen_imports
+          declare -a failed_imports
+          
+          # 4. 处理 plugins.txt
           if [ -f plugins.txt ]; then
-            grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
+            while read -r line; do
+              [ -z "$line" ] && continue
+              
               echo "Processing: $line"
               target_import=""
               
               if [[ "$line" == *"="* ]]; then
-                # === 优化后的逻辑 ===
                 ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
                 REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
                 
                 # 先 replace，再 get
-                go mod edit -replace "$ORIGINAL=$REPLACEMENT"
-                go get "$ORIGINAL"
-                
-                target_import="$ORIGINAL"
+                if go mod edit -replace "$ORIGINAL=$REPLACEMENT"; then
+                  if go get "$ORIGINAL"; then
+                    echo "✓ Successfully processed: $ORIGINAL -> $REPLACEMENT"
+                    target_import="$ORIGINAL"
+                  else
+                    echo "✗ Failed to get: $ORIGINAL"
+                    failed_imports+=("$ORIGINAL")
+                    continue
+                  fi
+                else
+                  echo "✗ Failed to replace: $ORIGINAL"
+                  failed_imports+=("$ORIGINAL")
+                  continue
+                fi
               else
-                go get "$line@latest"
-                target_import="$line"
+                if go get "$line@latest"; then
+                  echo "✓ Successfully got: $line"
+                  target_import="$line"
+                else
+                  echo "✗ Failed to get: $line"
+                  failed_imports+=("$line")
+                  continue
+                fi
               fi
-
-              # 写入 tools.go
-              if ! grep -q "\"$target_import\"" tools.go; then
-                 echo "  _ \"$target_import\"" >> tools.go
+              
+              # 写入 tools.go（去重）
+              if [ -n "$target_import" ] && [ -z "${seen_imports[$target_import]}" ]; then
+                echo "  _ \"$target_import\"" >> tools.go
+                seen_imports[$target_import]=1
               fi
-            done
+            done < <(grep -vE '^\s*#|^\s*$' plugins.txt)
           fi
-
-          # 5. 【关键修复】闭合 import 括号
+          
           echo ')' >> tools.go
           
-          # 6. 【关键修复】执行 tidy
-          # 这一步非常重要！它会根据 tools.go 移除掉你刚刚在 plugins.txt 里删掉的插件
-          # 并下载/校验所有依赖的 hash 到 go.sum
+          # 5. 执行 tidy
           go mod tidy
+          
+          # 6. 报告失败的导入并根据情况退出
+          if [ ${#failed_imports[@]} -gt 0 ]; then
+            echo ""
+            echo "::error::⚠️ The following imports failed:"
+            for import in "${failed_imports[@]}"; do
+              echo "  - $import"
+            done
+            echo ""
+            echo "Please check plugins.txt and fix these entries."
+            
+            # 【重要】默认遇到错误会终止 Action，防止提交坏的依赖。
+            # 如果你经过排查，认为这些插件缺失不影响编译，可以临时注释掉下面这行 exit 1
+            exit 1
+          fi
+          
+          echo "✓ Dependency update completed"
 
       - name: Check for Changes
         id: git-check
