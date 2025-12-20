@@ -108,9 +108,10 @@ jobs:
           ls -lh "${{ matrix.output_name }}"
 
       # ============================================================
-      # 2. 测试版本输出
+      # 2. 测试版本输出 (仅限 amd64 运行，ARM无法在GitHub Runner上直接运行)
       # ============================================================
       - name: Test Version Output
+        if: matrix.goarch == 'amd64'
         run: |
           chmod +x ./${{ matrix.output_name }}
           
