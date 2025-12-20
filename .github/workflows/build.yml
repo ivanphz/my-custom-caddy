@@ -158,7 +158,9 @@ jobs:
 
           def fmt_ver(v):
               if not v: return "N/A"
-              if '-' in v and len(v.split('-')[-1]) >= 12: return f"Commit: {v.split('-')[-1][:7]}"
+              # 截取 Commit Hash (v0.0.0-...-abcdef123456)
+              if '-' in v and len(v.split('-')[-1]) >= 12: 
+                  return f"Commit: {v.split('-')[-1][:7]}"
               return v
 
           def fmt_name(path):
@@ -170,18 +172,17 @@ jobs:
                       data = json.load(f)
                       res = {}
                       for item in data:
-                          # 【关键修复1】忽略主模块 (它没有 Version 字段，会导致崩溃)
-                          if item.get('Main'): continue
-                          
+                          if item.get('Main'): continue # 忽略主模块
                           path = item.get('Path')
                           if not path: continue
                           
-                          # 如果有 Replace，优先读取 Replace 的信息
-                          # 但保留原始 Item 的 Indirect 状态用于判断
+                          # 优先读取 Replace，但保留 Indirect 信息
                           if item.get('Replace'):
-                              orig_indirect = item.get('Indirect', False)
-                              res[path] = item['Replace']
-                              res[path]['Indirect'] = orig_indirect
+                              # 浅拷贝 Replace 信息
+                              repl = item['Replace'].copy()
+                              # 强制保留原始的 Indirect 状态，因为 Replace 结构里通常没有 Indirect 字段
+                              repl['Indirect'] = item.get('Indirect', False)
+                              res[path] = repl
                           else:
                               res[path] = item
                       return res
@@ -195,7 +196,7 @@ jobs:
               print("⚠️ Error: Failed to parse current module list.")
               sys.exit(0)
 
-          # 读取当前 plugins.txt
+          # 读取 plugins.txt 里的必选名单
           tracked = set()
           if os.path.exists('plugins.txt'):
               with open('plugins.txt', 'r') as f:
@@ -209,50 +210,55 @@ jobs:
           all_paths = set(curr.keys()) | set(prev.keys())
           
           for path in all_paths:
-              # 1. 彻底忽略 Caddy Core
               if path == "github.com/caddyserver/caddy/v2": continue
 
-              is_removed = (path in prev and path not in curr)
+              # === 核心逻辑优化 ===
               
-              # 2. 核心判定逻辑 (使用 Indirect 属性)
+              # 1. 存在性判断
+              in_curr = path in curr
+              in_prev = path in prev
+              
+              # 2. 决定是否显示该条目 (Is Relevant?)
+              # 显示条件：
+              # A. 它在 plugins.txt 监控列表中 (最重要)
+              # B. 或者它在当前版本是直接依赖 (Indirect=False)
+              # C. 或者它在旧版本是直接依赖 (防止被删除了看不到)
               is_relevant = False
-
-              if path in curr:
-                  # 如果在 plugins.txt 里，或者 Indirect=False (直接依赖)，则显示
-                  if path in tracked:
-                      is_relevant = True
-                  elif curr[path].get('Indirect', False) is False: 
-                      is_relevant = True
-
-              elif is_removed:
-                  # 如果旧版里 Indirect=False，说明它是旧版的一个插件，现在被删了 -> 记录
-                  if prev[path].get('Indirect', False) is False:
-                      is_relevant = True
-
+              if path in tracked:
+                  is_relevant = True
+              elif in_curr and curr[path].get('Indirect', False) is False:
+                  is_relevant = True
+              elif in_prev and prev[path].get('Indirect', False) is False:
+                  is_relevant = True
+              
               if not is_relevant: continue
 
-              # 3. 组装显示信息
-              display_path = path
-              if path in curr:
-                  display_path = curr[path].get('Path', path)
-              elif path in prev:
-                  display_path = prev[path].get('Path', path)
-
+              # 3. 准备显示数据
+              # 获取对象，优先取存在的，如果两边都有，取 curr 用于显示 Path 名称
+              obj = curr[path] if in_curr else prev[path]
+              display_path = obj.get('Path', path)
               name = fmt_name(display_path)
               link = f"https://{display_path}"
 
-              # 【关键修复2】使用 .get() 安全获取版本，防止任何潜在的 KeyError
               v_curr = curr.get(path, {}).get('Version', '')
               v_prev = prev.get(path, {}).get('Version', '')
 
-              if is_removed:
-                  msg = f"🗑️ **Removed**: [{name}]({link})"
-                  changes_other.append(msg)
-              elif path not in prev:
+              # 4. 生成变更消息 (修复了误报 Added/Removed 的问题)
+              if in_curr and in_prev:
+                  # 两边都有：只能是 Updated 或 无变化
+                  if v_curr != v_prev:
+                      msg = f"⬆️ **Updated**: [{name}]({link}) `{fmt_ver(v_prev)}` -> `{fmt_ver(v_curr)}`"
+                      changes_other.append(msg)
+                  # 如果版本一样，什么都不做
+              
+              elif in_curr and not in_prev:
+                  # 只有当前有：Added
                   msg = f"✨ **Added**: [{name}]({link}) `{fmt_ver(v_curr)}`"
                   changes_other.append(msg)
-              elif v_prev != v_curr:
-                  msg = f"⬆️ **Updated**: [{name}]({link}) `{fmt_ver(v_prev)}` -> `{fmt_ver(v_curr)}`"
+              
+              elif not in_curr and in_prev:
+                  # 只有旧版有：Removed
+                  msg = f"🗑️ **Removed**: [{name}]({link})"
                   changes_other.append(msg)
 
           if not changes_other:
