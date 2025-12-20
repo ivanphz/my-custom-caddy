@@ -38,23 +38,32 @@ jobs:
           grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             echo "Processing: $line"
             target_import=""
+            
             if [[ "$line" == *"="* ]]; then
+              # === 优化开始 ===
+              # 1. 解析原始包和替换包
               ORIGINAL=$(echo "$line" | cut -d'=' -f1 | xargs)
               REPLACEMENT=$(echo "$line" | cut -d'=' -f2 | xargs)
-              go mod edit -replace $ORIGINAL=$REPLACEMENT
-              go get $ORIGINAL
+              
+              # 2. 关键优化：先设置 replace，告诉 Go 这个包被替换了
+              go mod edit -replace "$ORIGINAL=$REPLACEMENT"
+              
+              # 3. 然后再 get，此时 Go 会自动去拉取 REPLACEMENT 的代码，
+              # 而不是尝试去拉取 ORIGINAL (这避免了 ORIGINAL 不存在或结构不对应的报错)
+              go get "$ORIGINAL"
+              
               target_import="$ORIGINAL"
+              # === 优化结束 ===
             else
-              go get $line@latest
+              go get "$line@latest"
               target_import="$line"
             fi
+
+            # 将 import 写入 tools.go 防止被 tidy 清除
             if ! grep -q "\"$target_import\"" tools.go; then
                echo "  _ \"$target_import\"" >> tools.go
             fi
           done
-          echo ')' >> tools.go
-          
-          go mod tidy
 
       - name: Check for Changes
         id: git-check
