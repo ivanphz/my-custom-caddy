@@ -70,7 +70,7 @@ jobs:
           echo "XCADDY_ARGS=$ARGS" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # 2. 手动构建（不用 xcaddy）
+      # 2. 修正后的构建流程（复用根目录 go.mod）
       # ============================================================
       - name: Build Caddy (${{ matrix.goarch }})
         env:
@@ -78,11 +78,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          # 创建构建目录
-          mkdir -p build
-          cd build
-          
-          # 生成 main.go
+          # 1. 生成 main.go 到根目录 (直接覆盖或新建)
           cat > main.go << 'MAINEOF'
           package main
           
@@ -92,7 +88,7 @@ jobs:
           MAINEOF
           
           # 从 plugins.txt 读取并添加 import
-          grep -vE '^\s*#|^\s*$' ../plugins.txt | while read -r line; do
+          grep -vE '^\s*#|^\s*$' plugins.txt | while read -r line; do
             if [[ "$line" == *"="* ]]; then
               PKG=$(echo "$line" | cut -d'=' -f1 | xargs)
             else
@@ -111,30 +107,13 @@ jobs:
           }
           MAINEOF
           
-          # 初始化 go module
-          go mod init caddy
-          
-          # 处理 replace 指令
-          grep '=' ../plugins.txt | grep -vE '^\s*#' | while read -r line; do
-            # 去掉行尾可能的空格或注释干扰
-            CLEAN_LINE=$(echo "$line" | cut -d'#' -f1 | xargs)
-            if [ -z "$CLEAN_LINE" ]; then continue; fi
-            
-            ORIGINAL=$(echo "$CLEAN_LINE" | cut -d'=' -f1 | xargs)
-            REPLACEMENT=$(echo "$CLEAN_LINE" | cut -d'=' -f2 | xargs)
-            
-            if [ -n "$ORIGINAL" ] && [ -n "$REPLACEMENT" ]; then
-              echo "Applying replace: $ORIGINAL => $REPLACEMENT"
-              go mod edit -replace "$ORIGINAL=$REPLACEMENT"
-            fi
-          done
-          
-          # 获取依赖
-          go get ./...
+          # 2. 关键：确保依赖同步
+          # 这里的 go mod tidy 会利用现有的 go.mod/go.sum，确保版本一致
+          # 如果 main.go 引入了 tools.go 没包含的东西，它会下载，但大部分应该已锁定
           go mod tidy
           
-          # 编译
-          go build -o "../${{ matrix.output_name }}" \
+          # 3. 编译
+          go build -o "${{ matrix.output_name }}" \
             -ldflags="-w -s -X github.com/caddyserver/caddy/v2.CustomVersion=${{ needs.init.outputs.version_tag }}" \
             -trimpath \
             -tags nobadger,nomysql,nopgx
