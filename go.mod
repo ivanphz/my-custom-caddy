@@ -14,9 +14,9 @@ require (
 	github.com/imgk/caddy-trojan v0.2.10-2
 	github.com/lanrat/caddy-dynamic-remoteip v0.0.0-20231007025615-f72ed4fc7b9c
 	github.com/mholt/caddy-events-exec v0.1.0
-	github.com/mholt/caddy-l4 v0.0.0-20260116154418-93f52b6a03ba
+	github.com/mholt/caddy-l4 v0.0.0-20260127203130-040d25cc886a
 	github.com/mholt/caddy-ratelimit v0.1.0
-	github.com/mholt/caddy-webdav v0.0.0-20250805175825-7a5c90d8bf90
+	github.com/mholt/caddy-webdav v0.0.0-20260127042217-fa2f366b0d75
 	github.com/monobilisim/caddy-ip-list v0.0.0-20250818180736-cd5c45325ade
 	github.com/okrc/caddy-uploadcert-tencentcloud v0.1.2
 	github.com/porech/caddy-maxmind-geolocation v1.0.1
