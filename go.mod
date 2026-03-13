@@ -10,11 +10,11 @@ require (
 	github.com/caddyserver/forwardproxy v0.0.0-20251013200746-bb364cc53204
 	github.com/caddyserver/jsonc-adapter v0.0.0-20200325004025-825ee096306c
 	github.com/fvbommel/caddy-combine-ip-ranges v0.0.1
-	github.com/greenpau/caddy-security v1.1.42
-	github.com/imgk/caddy-trojan v0.2.11-1
+	github.com/greenpau/caddy-security v1.1.46
+	github.com/imgk/caddy-trojan v0.2.11-2
 	github.com/lanrat/caddy-dynamic-remoteip v0.0.0-20231007025615-f72ed4fc7b9c
 	github.com/mholt/caddy-events-exec v0.1.0
-	github.com/mholt/caddy-l4 v0.0.0-20260304182434-d882e9c2661d
+	github.com/mholt/caddy-l4 v0.1.0
 	github.com/mholt/caddy-ratelimit v0.1.0
 	github.com/mholt/caddy-webdav v0.0.0-20260127042217-fa2f366b0d75
 	github.com/monobilisim/caddy-ip-list v0.0.0-20250818180736-cd5c45325ade
@@ -78,7 +78,7 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/greenpau/go-authcrunch v1.1.18 // indirect
+	github.com/greenpau/go-authcrunch v1.1.22 // indirect
 	github.com/greenpau/versioned v1.0.30 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/imgk/memory-go v0.2.0 // indirect
