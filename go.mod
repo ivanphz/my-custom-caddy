@@ -10,7 +10,7 @@ require (
 	github.com/caddyserver/forwardproxy v0.0.0-20251013200746-bb364cc53204
 	github.com/caddyserver/jsonc-adapter v0.0.0-20200325004025-825ee096306c
 	github.com/fvbommel/caddy-combine-ip-ranges v0.0.1
-	github.com/greenpau/caddy-security v1.1.46
+	github.com/greenpau/caddy-security v1.1.50
 	github.com/imgk/caddy-trojan v0.2.11-2
 	github.com/lanrat/caddy-dynamic-remoteip v0.0.0-20231007025615-f72ed4fc7b9c
 	github.com/mholt/caddy-events-exec v0.1.0
@@ -78,7 +78,7 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/greenpau/go-authcrunch v1.1.22 // indirect
+	github.com/greenpau/go-authcrunch v1.1.26 // indirect
 	github.com/greenpau/versioned v1.0.30 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/imgk/memory-go v0.2.0 // indirect
@@ -117,7 +117,7 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/riobard/go-bloom v0.0.0-20200614022211-cdc8013cb5b3 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/russellhaering/goxmldsig v1.5.0 // indirect
+	github.com/russellhaering/goxmldsig v1.6.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shadowsocks/go-shadowsocks2 v0.1.6-0.20241020092332-e1fe9ea73740 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
