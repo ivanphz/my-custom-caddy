@@ -10,7 +10,7 @@ require (
 	github.com/caddyserver/forwardproxy v0.0.0-20260321230143-0aab84dad4fc
 	github.com/caddyserver/jsonc-adapter v0.0.0-20200325004025-825ee096306c
 	github.com/fvbommel/caddy-combine-ip-ranges v0.0.1
-	github.com/greenpau/caddy-security v1.1.56
+	github.com/greenpau/caddy-security v1.1.60
 	github.com/imgk/caddy-trojan v0.2.11-2
 	github.com/lanrat/caddy-dynamic-remoteip v0.0.0-20231007025615-f72ed4fc7b9c
 	github.com/mholt/caddy-events-exec v0.1.0
@@ -19,7 +19,7 @@ require (
 	github.com/mholt/caddy-webdav v0.0.0-20260127042217-fa2f366b0d75
 	github.com/monobilisim/caddy-ip-list v0.0.0-20250818180736-cd5c45325ade
 	github.com/okrc/caddy-uploadcert-tencentcloud v0.1.2
-	github.com/porech/caddy-maxmind-geolocation v1.0.1
+	github.com/porech/caddy-maxmind-geolocation v1.0.3
 	github.com/tuzzmaniandevil/caddy-dynamic-clientip v1.0.5
 	github.com/xcaddyplugins/caddy-trusted-cloudfront v0.0.0-20240604042247-0a0864e80f1c
 )
@@ -79,7 +79,7 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/greenpau/go-authcrunch v1.1.32 // indirect
+	github.com/greenpau/go-authcrunch v1.1.36 // indirect
 	github.com/greenpau/versioned v1.0.30 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/imgk/memory-go v0.2.0 // indirect
